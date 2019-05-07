@@ -27,7 +27,6 @@ limitations under the License.
 #include "tensorflow/core/common_runtime/device_factory.h"
 #include "tensorflow/core/common_runtime/eager/context.h"
 #include "tensorflow/core/common_runtime/eager/eager_executor.h"
-#include "tensorflow/core/common_runtime/eager/kernel_and_device.h"
 #include "tensorflow/core/common_runtime/function.h"
 #include "tensorflow/core/common_runtime/rendezvous_mgr.h"
 #include "tensorflow/core/framework/rendezvous.h"
@@ -42,50 +41,66 @@ limitations under the License.
 #include "tensorflow/core/public/session_options.h"
 #include "tensorflow/core/public/version.h"
 
+struct TF_Operation;
+
 namespace tensorflow {
 
+// This struct is isomorphic to TF_Output, but we cannot use the latter here due
+// to layering concerns (TF_Output is defined at the C API layer).
+struct OutputGraphNode {
+  TF_Operation* oper;
+  int index;  // The index of the output within oper.
+};
+
 // Associates a Tensor and a Device, used in the eager runtime. Internal version
-// executor_of the TFE_TensorHandle struct and the python EagerTensor class
+// of the TFE_TensorHandle struct and the python EagerTensor class
 // (unrelated to python TensorHandle).
 class TensorHandle : public core::RefCounted {
  public:
-  TensorHandle(const Tensor& t, Device* d, Device* op_device, EagerContext* ctx)
-      : dtype(t.dtype()),
-        node_id(0),
-        tensor_(t),
-        device_(d),
-        op_device_(op_device),
-        ctx_(ctx),
-        is_ready_(true) {}
+  TensorHandle(const Tensor& t, Device* d, Device* op_device,
+               EagerContext* ctx);
+  TensorHandle(uint64 node_id, Device* d, Device* op_device,
+               Device* resource_device, DataType dtype, EagerContext* ctx);
 
-  TensorHandle(uint64 node_id, DataType dtype, EagerContext* ctx)
-      : dtype(dtype),
-        node_id(node_id),
-        tensor_(dtype),
-        device_(nullptr),
-        op_device_(nullptr),
-        ctx_(ctx),
-        is_ready_(ctx == nullptr) {
-    DCHECK_GT(node_id, 0);
+  // Remote tensor handle constructor.
+  TensorHandle(int64 op_id, int32 output_num, uint64 remote_shape_node_id,
+               DataType dtype, std::function<void()> call_on_destroy, Device* d,
+               Device* op_device, Device* resource_device, EagerContext* ctx);
+
+  // Symbolic tensor constructor.
+  TensorHandle(OutputGraphNode symbolic_tensor, DataType dtype);
+
+  ~TensorHandle() override {
+    VLOG(1) << "Deleting internal TensorHandle " << this;
+    if (call_on_destroy_) {
+      call_on_destroy_();
+    }
   }
-
-  ~TensorHandle() override {}
 
   Status Tensor(const tensorflow::Tensor** t);
 
-  Status Device(tensorflow::Device** d);
+  Status TensorValue(tensorflow::TensorValue* t);
 
-  Status OpDevice(tensorflow::Device** d);
+  tensorflow::Device* device() const { return device_; }
+  tensorflow::Device* op_device() const { return op_device_; }
+  tensorflow::Device* resource_device() const { return resource_device_; }
 
   Status TensorAndDevice(const tensorflow::Tensor** tensor,
                          tensorflow::Device** device,
                          tensorflow::Device** op_device);
 
+  Status Shape(tensorflow::TensorShape* shape);
+
+  Status NumDims(int* num_dims);
+  Status Dim(int dim_index, int64* dim);
+  Status NumElements(int64* num_elements);
+
+  // Return the op_id and output num if the handle refers to a remote tensor.
+  Status RemoteAddress(int64* op_id, int32* output_num);
+
   // Note that this can be called at most once, and only on non-ready handles,
   // and makes them ready.
-  void SetTensorAndDevice(const tensorflow::Tensor& tensor,
-                          tensorflow::Device* device,
-                          tensorflow::Device* op_device);
+  void SetTensor(const tensorflow::Tensor& tensor);
 
   Status CopyToDevice(EagerContext* ctx, tensorflow::Device* dstd,
                       TensorHandle** output);
@@ -100,17 +115,39 @@ class TensorHandle : public core::RefCounted {
   // ready.
   const DataType dtype;
 
+  void SetRemoteShape(std::unique_ptr<TensorShape> remote_shape) {
+    remote_shape_ = std::move(remote_shape);
+  }
+
+  bool OnHostCPU() {
+    mutex_lock ml(ctx_mutex_);
+    return device_ == nullptr ||
+           (ctx_ == nullptr || ctx_->HostCPU() == device_);
+  }
+
+  bool IsRemote();
+
+  OutputGraphNode* getSymbolicTensor() const { return symbolic_tensor.get(); }
+
+  string DebugString() const;
+
+  // If this TensorHandle is 1) a local tensor, and 2) a resource variable,
+  // return data type and shape of the resource variable.
+  Status GetResourceVariableDtypeAndShape(
+      std::pair<DataType, TensorShape>* result);
+
  private:
   // If the contents of the Tensor pointed to by this handle is yet to be
-  // computed by a EagerNode, this function will block till that compuatation is
+  // computed by a EagerNode, this function will block till that computation is
   // done and the handle is "ready".
   Status WaitReady();
+  Status WaitForNode(uint64 node_id, bool return_if_is_ready);
 
   bool IsReady();
 
   // Id for the EagerNode that will compute the value pointed to by this handle.
   // If the value is 0, the handle is already ready, but not vice-versa.
-  const uint64 node_id;
+  const uint64 node_id_;
 
   tensorflow::Tensor tensor_;
 
@@ -122,11 +159,29 @@ class TensorHandle : public core::RefCounted {
   //
   // TODO(ashankar): Reference count TFE_Context to ensure that 'device_' of a
   // TFE_TensorHandle does not outlive the TFE_Context from which it came?
-  tensorflow::Device* device_;
+  tensorflow::Device* const device_;
 
   // Device in which the op producing this tensor was executed. Equals to
   // device_ for constant tensors.
-  tensorflow::Device* op_device_;
+  // Can be nullptr if the op producing this tensor was a function executed
+  // with function library runtime or if this tensor represents a symbolic
+  // tensor.
+  tensorflow::Device* const op_device_;
+
+  // If the tensor dtype is DT_RESOURCE, resource_device_ holds the device
+  // backing the resource. Else resource_device_ is nullptr.
+  tensorflow::Device* const resource_device_;
+
+  // IDs required when this class is representing a remote tensor handle.
+  const int64 remote_op_id_;
+  const int32 remote_output_num_;
+  std::unique_ptr<TensorShape> remote_shape_;
+  const uint64 remote_shape_node_id_;
+
+  // A callback that is executed when the class is destroyed.
+  //
+  // This is currently used for remote tensor handles.
+  const std::function<void()> call_on_destroy_;
 
   mutex ctx_mutex_;
 
@@ -135,7 +190,28 @@ class TensorHandle : public core::RefCounted {
   // `ctx` object is not owned and should outlive this handle.
   EagerContext* ctx_ GUARDED_BY(ctx_mutex_);
   bool is_ready_ GUARDED_BY(ctx_mutex_);
+
+  // When non-NULL, this tensor handle instance represents a symbolic tensor
+  // (corresponding to a graph node), whose concrete value is to be produced by
+  // executing that graph node.
+  std::unique_ptr<OutputGraphNode> symbolic_tensor;
+
+  // If this TensorHandle is 1) a local tensor, and 2) a resource variable, we
+  // will store data type and shape of the resource variable to
+  // `resource_dtype_and_shape_`.
+  std::pair<DataType, TensorShape> resource_dtype_and_shape_
+      GUARDED_BY(ctx_mutex_);
+  // `resource_dtype_and_shape_status_` stores whether we succeeded to get data
+  // type of shape of this TensorHandle.
+  Status resource_dtype_and_shape_status_ GUARDED_BY(ctx_mutex_);
+  // `resource_dtype_and_shape_initialized_` indicates whether we have tried to
+  // get `resource_dtype_and_shape_`.
+  bool resource_dtype_and_shape_initialized_ GUARDED_BY(ctx_mutex_);
 };
+
+// If tensor's dtype is DT_RESOURCE, returns the device backing the resource.
+// Else, returns nullptr.
+Device* GetResourceDevice(const Tensor& t, EagerContext* ctx);
 
 }  // namespace tensorflow
 

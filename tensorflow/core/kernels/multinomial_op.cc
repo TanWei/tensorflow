@@ -53,6 +53,20 @@ struct MultinomialFunctor {
                   typename TTypes<OutputType>::Matrix output);
 };
 
+#if GOOGLE_CUDA
+extern template struct MultinomialFunctor<GPUDevice, Eigen::half, int32>;
+extern template struct MultinomialFunctor<GPUDevice, float, int32>;
+extern template struct MultinomialFunctor<GPUDevice, double, int32>;
+extern template struct MultinomialFunctor<GPUDevice, int32, int32>;
+extern template struct MultinomialFunctor<GPUDevice, int64, int32>;
+
+extern template struct MultinomialFunctor<GPUDevice, Eigen::half, int64>;
+extern template struct MultinomialFunctor<GPUDevice, float, int64>;
+extern template struct MultinomialFunctor<GPUDevice, double, int64>;
+extern template struct MultinomialFunctor<GPUDevice, int32, int64>;
+extern template struct MultinomialFunctor<GPUDevice, int64, int64>;
+#endif  // GOOGLE_CUDA
+
 template <typename T, typename OutputType>
 struct MultinomialFunctor<CPUDevice, T, OutputType> {
   void operator()(OpKernelContext* ctx, const CPUDevice& d,
@@ -75,7 +89,7 @@ struct MultinomialFunctor<CPUDevice, T, OutputType> {
       // lambda.  Since we want to let each worker have its own copy, we pass
       // "gen" by reference and explicitly do a copy assignment here.
       random::PhiloxRandom gen_copy = gen;
-      // Skip takes units of 128 bytes.  +3 is so rounding doesn't lead to
+      // Skip takes units of 128 bits.  +3 is so rounding doesn't lead to
       // us using the same state in different batches.
       gen_copy.Skip(start_row * (num_samples + 3) / 4);
       random::SimplePhilox simple_philox(&gen_copy);

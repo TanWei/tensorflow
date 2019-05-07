@@ -18,13 +18,13 @@ limitations under the License.
 
 #include <map>
 
+#include "absl/base/macros.h"
 #include "tensorflow/stream_executor/blas.h"
 #include "tensorflow/stream_executor/dnn.h"
 #include "tensorflow/stream_executor/fft.h"
 #include "tensorflow/stream_executor/lib/status.h"
 #include "tensorflow/stream_executor/lib/statusor.h"
 #include "tensorflow/stream_executor/platform.h"
-#include "tensorflow/stream_executor/platform/mutex.h"
 #include "tensorflow/stream_executor/plugin.h"
 #include "tensorflow/stream_executor/rng.h"
 
@@ -97,6 +97,7 @@ class PluginRegistry {
   // TODO(b/22689637): Deprecated/temporary. Will be deleted once all users are
   // on MultiPlatformManager / PlatformId.
   template <typename FactoryT>
+  ABSL_DEPRECATED("Use MultiPlatformManager / PlatformId instead.")
   port::StatusOr<FactoryT> GetFactory(PlatformKind platform_kind,
                                       PluginId plugin_id);
 

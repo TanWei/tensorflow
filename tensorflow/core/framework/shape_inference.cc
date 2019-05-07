@@ -14,10 +14,10 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/framework/shape_inference.h"
 
+#include "tensorflow/core/framework/bounds_check.h"
 #include "tensorflow/core/framework/node_def.pb_text.h"
 #include "tensorflow/core/framework/partial_tensor_shape.h"
 #include "tensorflow/core/framework/tensor_shape.pb.h"
-#include "tensorflow/core/kernels/bounds_check.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/strings/numbers.h"
 #include "tensorflow/core/lib/strings/scanner.h"
@@ -239,6 +239,15 @@ void InferenceContext::PreInputInit(
   output_handle_shapes_and_types_.resize(num_outputs);
 }
 
+Status InferenceContext::ExpandOutputs(int new_output_size) {
+  if (new_output_size < outputs_.size()) {
+    return errors::InvalidArgument("Trying to reduce number of outputs of op.");
+  }
+  outputs_.resize(new_output_size, nullptr);
+  output_handle_shapes_and_types_.resize(new_output_size);
+  return Status::OK();
+}
+
 void InferenceContext::PostInputInit(
     std::vector<std::unique_ptr<std::vector<ShapeAndType>>> input_handle_data) {
   int num_inputs_from_node_def = 0;
@@ -338,6 +347,20 @@ string InferenceContext::DebugString(DimensionHandle d) {
 string InferenceContext::DebugString() const {
   return strings::StrCat("InferenceContext for node: ",
                          ProtoDebugString(*node_def_));
+}
+
+string InferenceContext::DebugString(const ShapeAndType& shape_and_type) {
+  return strings::StrCat(DebugString(shape_and_type.shape), ":",
+                         DataTypeString(shape_and_type.dtype));
+}
+
+string InferenceContext::DebugString(
+    gtl::ArraySlice<ShapeAndType> shape_and_types) {
+  std::vector<string> pieces;
+  for (const ShapeAndType& s : shape_and_types) {
+    pieces.push_back(DebugString(s));
+  }
+  return strings::StrCat("[", str_util::Join(pieces, ","), "]");
 }
 
 Status InferenceContext::WithRank(ShapeHandle shape, int64 rank,
@@ -605,13 +628,20 @@ Status InferenceContext::Subshape(ShapeHandle s, int64 start,
   return Subshape(s, start, std::numeric_limits<int64>::max() /* end */, out);
 }
 
-Status InferenceContext::Subshape(ShapeHandle s, int64 start_in, int64 end_in,
+Status InferenceContext::Subshape(ShapeHandle s, int64 start, int64 end,
                                   ShapeHandle* out) {
-  int64 start = start_in;
-  int64 end = end_in;
+  return Subshape(s, start, end, 1 /* stride */, out);
+}
+
+Status InferenceContext::Subshape(ShapeHandle s, int64 start, int64 end,
+                                  int64 stride, ShapeHandle* out) {
+  int64 start_in = start;
+  int64 end_in = end;
+
   const int32 rank = Rank(s);
-  if (start == 0 && ((RankKnown(s) && end >= rank) ||
-                     end == std::numeric_limits<int64>::max())) {
+  if (start == 0 && stride == 1 &&
+      ((RankKnown(s) && end >= rank) ||
+       end == std::numeric_limits<int64>::max())) {
     *out = s;
     return Status::OK();
   }
@@ -621,6 +651,9 @@ Status InferenceContext::Subshape(ShapeHandle s, int64 start_in, int64 end_in,
 
   if (start > rank) start = rank;
   if (end > rank) end = rank;
+
+  if (stride < 0 && start == rank) --start;
+
   if (start < 0) {
     start = rank + start;
     if (start < 0) {
@@ -638,16 +671,23 @@ Status InferenceContext::Subshape(ShapeHandle s, int64 start_in, int64 end_in,
                                      ", for shape with rank ", rank);
     }
   }
-  if (start > end) {
+  if (stride > 0 && start > end) {
     *out = nullptr;
     return errors::InvalidArgument(
         "Subshape must have computed start <= end, but is ", start, " and ",
         end, " (computed from start ", start_in, " and end ", end_in,
         " over shape with rank ", rank, ")");
+  } else if (stride < 0 && start < end) {
+    *out = nullptr;
+    return errors::InvalidArgument(
+        "Subshape must have computed start >= end since stride is negative, "
+        "but is ",
+        start, " and ", end, " (computed from start ", start_in, " and end ",
+        end_in, " over shape with rank ", rank, " and stride", stride, ")");
   }
+
   std::vector<DimensionHandle> dims;
-  dims.reserve(end - start);
-  for (int i = start; i < end; ++i) {
+  for (int i = start; stride > 0 ? i < end : i > end; i += stride) {
     dims.push_back(Dim(s, i));
   }
   return ReturnCreatedShape(dims, out);
@@ -919,8 +959,7 @@ Status InferenceContext::GetScalarFromTensor(const Tensor* t, int64* val) {
     *val = t->scalar<int64>()();
     return Status::OK();
   } else {
-    return errors::InvalidArgument(
-        "Scalar input for dim size must be int32 or int64");
+    return errors::InvalidArgument("Scalar input must be int32 or int64.");
   }
 }
 
@@ -1220,7 +1259,6 @@ bool InferenceContext::RelaxHandleShapesAndMergeTypes(
     return false;
   }
   std::vector<ShapeAndType> new_values(shapes_and_types.size());
-  bool refined = false;
   for (int i = 0; i < shapes_and_types.size(); ++i) {
     const ShapeAndType& existing = (*to_update)[i];
     if (shapes_and_types[i].dtype == existing.dtype) {
@@ -1230,16 +1268,9 @@ bool InferenceContext::RelaxHandleShapesAndMergeTypes(
         return false;
       } else {
         new_values[i].dtype = shapes_and_types[i].dtype;
-        refined = true;
       }
     }
     Relax(existing.shape, shapes_and_types[i].shape, &new_values[i].shape);
-    if (!existing.shape.SameHandle(new_values[i].shape)) {
-      refined = true;
-    }
-  }
-  if (!refined) {
-    return false;
   }
   to_update->swap(new_values);
   return true;

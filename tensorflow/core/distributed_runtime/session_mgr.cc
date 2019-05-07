@@ -67,7 +67,7 @@ Status SessionMgr::CreateSession(const string& session,
     worker_name = WorkerNameFromServerDef(server_def);
   }
 
-  if (worker_cache != nullptr & default_worker_cache_.get() != nullptr) {
+  if (worker_cache != nullptr && default_worker_cache_ != nullptr) {
     worker_cache->SetLogging(this->is_logging_active_);
   }
 
@@ -76,15 +76,22 @@ Status SessionMgr::CreateSession(const string& session,
 
   std::shared_ptr<WorkerSession> worker_session;
 
-  if (isolate_session_state) {
+  if (isolate_session_state || server_def.cluster().job_size()) {
+    if (server_def.cluster().job_size()) {
+      VLOG(1) << "ClusterSpec propagation is enabled.";
+    }
+    if (!isolate_session_state) {
+      VLOG(1) << "Session state isolation is disabled.";
+    }
+
     // Create a private copy of the DeviceMgr for the WorkerSession.
-    std::vector<Device*> renamed_devices;
+    std::vector<std::unique_ptr<Device>> renamed_devices;
     for (Device* d : worker_env_->local_devices) {
       renamed_devices.push_back(RenamedDevice::NewRenamedDevice(
           worker_name, d, false, isolate_session_state));
     }
 
-    auto device_mgr = MakeUnique<DeviceMgr>(renamed_devices);
+    auto device_mgr = MakeUnique<DeviceMgr>(std::move(renamed_devices));
     auto graph_mgr = MakeUnique<GraphMgr>(worker_env_, device_mgr.get());
     worker_session.reset(
         new WorkerSession(session, worker_name,
@@ -122,7 +129,9 @@ Status SessionMgr::WorkerSessionForSessionLocked(
     auto it = sessions_.find(session_handle);
     if (it == sessions_.end()) {
       return errors::Aborted("Session handle is not found: ", session_handle,
-                             ". Possibly this worker just restarted.");
+                             ". Possibly this worker (\"",
+                             legacy_session_->worker_name,
+                             "\") just restarted.");
     } else {
       *out_session = it->second;
     }

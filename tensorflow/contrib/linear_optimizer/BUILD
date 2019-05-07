@@ -40,7 +40,12 @@ py_test(
     name = "sdca_ops_test",
     size = "medium",
     srcs = ["python/kernel_tests/sdca_ops_test.py"],
+    python_version = "PY2",
     srcs_version = "PY2AND3",
+    tags = [
+        "no_gpu",
+        "no_pip_gpu",
+    ],
     deps = [
         ":sdca_ops_py",
         ":sparse_feature_column_py",
@@ -76,6 +81,7 @@ py_test(
     name = "sharded_mutable_dense_hashtable_test",
     size = "small",
     srcs = ["python/ops/sharded_mutable_dense_hashtable_test.py"],
+    python_version = "PY2",
     srcs_version = "PY2AND3",
     deps = [
         ":sharded_mutable_dense_hashtable_py",
@@ -96,6 +102,7 @@ py_test(
     name = "sparse_feature_column_test",
     size = "small",
     srcs = ["python/ops/sparse_feature_column_test.py"],
+    python_version = "PY2",
     srcs_version = "PY2AND3",
     deps = [
         ":sparse_feature_column_py",
@@ -126,6 +133,7 @@ py_library(
 py_test(
     name = "sdca_estimator_test",
     srcs = ["python/sdca_estimator_test.py"],
+    python_version = "PY2",
     shard_count = 4,
     srcs_version = "PY2AND3",
     deps = [

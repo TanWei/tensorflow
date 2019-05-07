@@ -60,3 +60,30 @@ cc_library(
     ],
     alwayslink = 1,
 )
+
+cc_library(
+    name = "proto_utils",
+    srcs = ["proto_utils.cc"],
+    hdrs = ["proto_utils.h"],
+    deps = [
+        "//tensorflow/core:framework",
+        "//tensorflow/core:lib",
+        "//tensorflow/core:platform_base",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/time",
+        "@protobuf_archive//:protobuf_headers",
+    ],
+)
+
+tf_cc_test(
+    name = "proto_utils_test",
+    srcs = ["proto_utils_test.cc"],
+    deps = [
+        ":proto_utils",
+        "//tensorflow/core:lib",
+        "//tensorflow/core:test",
+        "//tensorflow/core:test_main",
+        "//tensorflow/core:testlib",
+        "@com_google_googletest//:gtest_main",
+    ],
+)

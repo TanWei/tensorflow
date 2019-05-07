@@ -29,7 +29,7 @@ from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import nn_ops
 from tensorflow.python.ops.distributions import bijector
-
+from tensorflow.python.util import deprecation
 
 __all__ = [
     "Permute",
@@ -40,9 +40,10 @@ class Permute(bijector.Bijector):
   """Permutes the rightmost dimension of a `Tensor`.
 
   ```python
-  tfd = tf.contrib.distributions
+  import tensorflow_probability as tfp
+  tfb = tfp.bijectors
 
-  reverse = tfd.bijectors.Permute(permutation=[2, 1, 0])
+  reverse = tfb.Permute(permutation=[2, 1, 0])
 
   reverse.forward([-1., 0., 1.])
   # ==> [1., 0., -1]
@@ -60,12 +61,13 @@ class Permute(bijector.Bijector):
   Warning: `tf.estimator` may repeatedly build the graph thus
   `Permute(np.random.permutation(event_size)).astype("int32"))` is not a
   reliable parameterization (nor would it be even if using `tf.constant`). A
-  safe alternative is to use `tf.get_variable` to achieve "init once" behavior,
+  safe alternative is to use `tf.compat.v1.get_variable` to achieve "init once"
+  behavior,
   i.e.,
 
   ```python
   def init_once(x, name):
-    return tf.get_variable(name, initializer=x, trainable=False)
+    return tf.compat.v1.get_variable(name, initializer=x, trainable=False)
 
   Permute(permutation=init_once(
       np.random.permutation(event_size).astype("int32"),
@@ -74,6 +76,13 @@ class Permute(bijector.Bijector):
 
   """
 
+  @deprecation.deprecated(
+      "2018-10-01", "The TensorFlow Distributions library has moved to "
+      "TensorFlow Probability "
+      "(https://github.com/tensorflow/probability). You "
+      "should update all references to use `tfp.distributions` "
+      "instead of `tf.contrib.distributions`.",
+      warn_once=True)
   def __init__(self, permutation, validate_args=False, name=None):
     """Creates the `Permute` bijector.
 
@@ -91,9 +100,7 @@ class Permute(bijector.Bijector):
         `{0, 1, ..., d}`.
     """
     with ops.name_scope(name, "permute", values=[permutation]):
-      permutation = ops.convert_to_tensor(
-          permutation,
-          name="permutation")
+      permutation = ops.convert_to_tensor(permutation, name="permutation")
       if not permutation.dtype.is_integer:
         raise TypeError("permutation.dtype ({}) should be `int`-like.".format(
             permutation.dtype.name))
@@ -103,12 +110,12 @@ class Permute(bijector.Bijector):
           raise ValueError("Permutation over `d` must contain exactly one of "
                            "each of `{0, 1, ..., d}`.")
       elif validate_args:
-        p, _ = nn_ops.top_k(-permutation,
-                            k=array_ops.shape(permutation)[-1],
-                            sorted=True)
+        p, _ = nn_ops.top_k(
+            -permutation, k=array_ops.shape(permutation)[-1], sorted=True)
         permutation = control_flow_ops.with_dependencies([
             check_ops.assert_equal(
-                -p, math_ops.range(array_ops.size(p)),
+                -p,
+                math_ops.range(array_ops.size(p)),
                 message=("Permutation over `d` must contain exactly one of "
                          "each of `{0, 1, ..., d}`.")),
         ], permutation)
@@ -128,9 +135,7 @@ class Permute(bijector.Bijector):
 
   def _inverse(self, y):
     return array_ops.gather(
-        y,
-        array_ops.invert_permutation(self.permutation),
-        axis=-1)
+        y, array_ops.invert_permutation(self.permutation), axis=-1)
 
   def _inverse_log_det_jacobian(self, y):
     # is_constant_jacobian = True for this bijector, hence the

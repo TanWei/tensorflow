@@ -223,7 +223,6 @@ tf_kernel_library(
         ":model_ops_lib",
         "//tensorflow/core:framework",
         "//tensorflow/core:lib",
-        "//tensorflow/core:lib_internal",
     ],
     alwayslink = 1,
 )
@@ -319,7 +318,6 @@ tf_kernel_library(
         ":stats_ops_lib",
         "//tensorflow/core:framework",
         "//tensorflow/core:lib",
-        "//tensorflow/core:lib_internal",
     ],
     alwayslink = 1,
 )
@@ -438,6 +436,7 @@ py_test(
     name = "eval_metrics_test",
     size = "small",
     srcs = ["client/eval_metrics_test.py"],
+    python_version = "PY2",
     srcs_version = "PY2AND3",
     deps = [
         ":eval_metrics",
@@ -463,8 +462,12 @@ py_test(
     name = "scatter_add_ndim_op_test",
     size = "small",
     srcs = ["python/kernel_tests/scatter_add_ndim_op_test.py"],
+    python_version = "PY2",
     srcs_version = "PY2AND3",
-    tags = ["no_pip_gpu"],
+    tags = [
+        "no_gpu",
+        "no_pip_gpu",
+    ],
     deps = [
         ":tensor_forest_ops_py",
         "//tensorflow/python:framework_test_lib",
@@ -501,6 +504,7 @@ py_test(
     name = "tensor_forest_test",
     size = "small",
     srcs = ["python/tensor_forest_test.py"],
+    python_version = "PY2",
     srcs_version = "PY2AND3",
     deps = [
         ":tensor_forest_py",
@@ -517,6 +521,7 @@ py_library(
     srcs_version = "PY2AND3",
     deps = [
         ":client_lib",
+        "//tensorflow/contrib/estimator:estimator_py",
         "//tensorflow/contrib/layers:layers_py",
         "//tensorflow/contrib/learn",
         "//tensorflow/python:array_ops",
@@ -537,8 +542,11 @@ py_test(
     name = "random_forest_test",
     size = "medium",
     srcs = ["client/random_forest_test.py"],
+    python_version = "PY2",
+    shard_count = 6,
     srcs_version = "PY2AND3",
     tags = [
+        "noasan",
         "nomac",  # b/63258195
         "notsan",
     ],

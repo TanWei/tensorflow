@@ -14,6 +14,7 @@ limitations under the License.
 ==============================================================================*/
 
 #include "tensorflow/core/grappler/optimizers/model_pruner.h"
+#include "tensorflow/cc/ops/array_ops.h"
 #include "tensorflow/cc/ops/standard_ops.h"
 #include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/core/framework/tensor_testutil.h"
@@ -138,6 +139,110 @@ TEST_F(ModelPrunerTest, IdentityPruning) {
   std::vector<string> fetch = {"e"};
   auto expected_tensors = EvaluateNodes(item.graph, fetch);
   auto actual_tensors = EvaluateNodes(output, fetch);
+  EXPECT_EQ(1, expected_tensors.size());
+  EXPECT_EQ(1, actual_tensors.size());
+  test::ExpectTensorEqual<float>(expected_tensors[0], actual_tensors[0]);
+}
+
+TEST_F(ModelPrunerTest, IdentityNInputPruning) {
+  tensorflow::Scope s = tensorflow::Scope::NewRootScope();
+
+  Output a = ops::Const(s.WithOpName("a"), 2.0f, {10, 10});
+  Output b = ops::Sqrt(s.WithOpName("b"), {a});
+  Output c = ops::Const(s.WithOpName("c"), 3.0f, {10, 10});
+  // d will be pruned because it only has control outputs.
+  Output d = ops::Const(s.WithOpName("d"), 4.0f, {10, 10});
+  auto e =
+      ops::IdentityN(s.WithOpName("e").WithControlDependencies(d), {a, b, c});
+  auto f = ops::IdentityN(s.WithOpName("f"), {e[2], e[1], e[0]});
+  Output g = ops::Sqrt(s.WithOpName("g"), {f[1]});
+  Output h = ops::Sqrt(s.WithOpName("h"), {f[2]});
+
+  GrapplerItem item;
+  TF_CHECK_OK(s.ToGraphDef(&item.graph));
+
+  item.fetch = {"g", "h"};
+  ModelPruner pruner;
+  GraphDef output;
+  Status status = pruner.Optimize(nullptr, item, &output);
+
+  TF_EXPECT_OK(status);
+
+  EXPECT_EQ(6, output.node_size());
+  const NodeDef& new_g = output.node(0);
+  EXPECT_EQ("g", new_g.name());
+  const NodeDef& new_a = output.node(1);
+  EXPECT_EQ("a", new_a.name());
+  const NodeDef& new_b = output.node(2);
+  EXPECT_EQ("b", new_b.name());
+  const NodeDef& new_e = output.node(3);
+  EXPECT_EQ("e", new_e.name());
+  const NodeDef& new_f = output.node(4);
+  EXPECT_EQ("f", new_f.name());
+  const NodeDef& new_h = output.node(5);
+  EXPECT_EQ("h", new_h.name());
+
+  // Node "c" is pruned along with inputs leading to "c".
+  EXPECT_EQ(2, new_e.input_size());
+  EXPECT_EQ("a", new_e.input(0));
+  EXPECT_EQ("b", new_e.input(1));
+  EXPECT_EQ(2, new_f.input_size());
+  EXPECT_EQ("e:1", new_f.input(0));
+  EXPECT_EQ("e", new_f.input(1));
+  EXPECT_EQ(1, new_g.input_size());
+  EXPECT_EQ("f", new_g.input(0));
+  EXPECT_EQ(1, new_h.input_size());
+  EXPECT_EQ("f:1", new_h.input(0));
+
+  auto expected_tensors = EvaluateNodes(item.graph, item.fetch);
+  auto actual_tensors = EvaluateNodes(output, item.fetch);
+  EXPECT_EQ(2, expected_tensors.size());
+  EXPECT_EQ(2, actual_tensors.size());
+  for (int i = 0; i < expected_tensors.size(); i++) {
+    test::ExpectTensorEqual<float>(expected_tensors[i], actual_tensors[i]);
+  }
+}
+
+TEST_F(ModelPrunerTest, IdentityNInputPruningWithIdentityNInFetch) {
+  tensorflow::Scope s = tensorflow::Scope::NewRootScope();
+
+  Output a = ops::Const(s.WithOpName("a"), 2.0f, {10, 10});
+  Output b = ops::Sqrt(s.WithOpName("b"), {a});
+  Output c = ops::Const(s.WithOpName("c"), 3.0f, {10, 10});
+  // d will be pruned because it only has control outputs.
+  Output d = ops::Const(s.WithOpName("d"), 4.0f, {10, 10});
+  auto e =
+      ops::IdentityN(s.WithOpName("e").WithControlDependencies(d), {a, b, c});
+  auto f = ops::IdentityN(s.WithOpName("f"), {e[0], e[1], e[2]});
+  auto g = ops::IdentityN(s.WithOpName("g"), {f[1]});
+
+  GrapplerItem item;
+  TF_CHECK_OK(s.ToGraphDef(&item.graph));
+
+  item.fetch = {"g"};
+  ModelPruner pruner;
+  GraphDef output;
+  Status status = pruner.Optimize(nullptr, item, &output);
+  TF_EXPECT_OK(status);
+
+  EXPECT_EQ(4, output.node_size());
+  const NodeDef& new_a = output.node(0);
+  EXPECT_EQ("a", new_a.name());
+  const NodeDef& new_b = output.node(1);
+  EXPECT_EQ("b", new_b.name());
+  const NodeDef& new_e = output.node(2);
+  EXPECT_EQ("e", new_e.name());
+  const NodeDef& new_g = output.node(3);
+  EXPECT_EQ("g", new_g.name());
+
+  EXPECT_EQ(1, new_e.input_size());
+  EXPECT_EQ("b", new_e.input(0));
+  EXPECT_EQ(1, new_g.input_size());
+  // Single output IdentityN (node "f") was pruned.
+  EXPECT_EQ("e", new_g.input(0));
+
+  auto expected_tensors = EvaluateNodes(item.graph, item.fetch);
+  auto actual_tensors = EvaluateNodes(output, item.fetch);
   EXPECT_EQ(1, expected_tensors.size());
   EXPECT_EQ(1, actual_tensors.size());
   test::ExpectTensorEqual<float>(expected_tensors[0], actual_tensors[0]);
@@ -400,6 +505,82 @@ TEST_F(ModelPrunerTest, PruningPerservesCrossDeviceIdentity) {
                                     1e-6);
     }
   }
+}
+
+TEST_F(ModelPrunerTest, PruneNoOpsWithoutInputs) {
+  tensorflow::Scope s = tensorflow::Scope::NewRootScope();
+  Output c1 = ops::Const(s.WithOpName("c1"), 0.0f, {1, 1});
+  Output id1 = ops::Identity(s.WithOpName("id1"), c1);
+  GrapplerItem item;
+  item.fetch = {"id1"};
+  TF_CHECK_OK(s.ToGraphDef(&item.graph));
+  // Add an explicit no-op node without inputs. It should be pruned even though
+  // it has a path to the fetch node.
+  NodeDef* no_op = item.graph.add_node();
+  no_op->set_name("no_op1");
+  no_op->set_op("NoOp");
+  // Add an explicit no-op node with a control input. It should not be pruned.
+  no_op = item.graph.add_node();
+  no_op->set_name("no_op2");
+  no_op->set_op("NoOp");
+  no_op->add_input("^c1");
+
+  // Add NoOps as control inputs to fetch node.
+  item.graph.mutable_node(1)->add_input("^no_op1");
+  item.graph.mutable_node(1)->add_input("^no_op2");
+
+  ModelPruner pruner;
+  GraphDef output;
+  Status status = pruner.Optimize(nullptr, item, &output);
+  TF_EXPECT_OK(status);
+
+  ASSERT_EQ(output.node_size(), 3);
+  EXPECT_EQ(output.node(0).name(), "c1");
+
+  EXPECT_EQ(output.node(1).name(), "no_op2");
+  ASSERT_EQ(output.node(1).input_size(), 1);
+  EXPECT_EQ(output.node(1).input(0), "^c1");
+
+  EXPECT_EQ(output.node(2).name(), "id1");
+  ASSERT_EQ(output.node(2).input_size(), 2);
+  EXPECT_EQ(output.node(2).input(0), "c1");
+  EXPECT_EQ(output.node(2).input(1), "^no_op2");
+}
+
+TEST_F(ModelPrunerTest, PruneConstantsWithoutInputsAndOutputs) {
+  tensorflow::Scope s = tensorflow::Scope::NewRootScope();
+  // c0 has an non-control output => will NOT be pruned.
+  Output c0 = ops::Const(s.WithOpName("c0"), 0.0f, {1, 1});
+  // c1 has neither inputs nor outputs => will be pruned.
+  Output c1 = ops::Const(s.WithOpName("c1"), 1.0f, {1, 1});
+  // c2 has a control input and a control output  => will NOT be pruned.
+  Output c2 = ops::Const(s.WithOpName("c2").WithControlDependencies({c0}), 2.0f,
+                         {1, 1});
+  // c3 has no inputs and one control output  => will be pruned.
+  Output c3 = ops::Const(s.WithOpName("c3"), 3.0f, {1, 1});
+  Output id1 = ops::Identity(
+      s.WithOpName("id1").WithControlDependencies({c2}).WithControlDependencies(
+          {c3}),
+      c0);
+  GrapplerItem item;
+  item.fetch = {"id1"};
+  TF_CHECK_OK(s.ToGraphDef(&item.graph));
+  ModelPruner pruner;
+  GraphDef output;
+  Status status = pruner.Optimize(nullptr, item, &output);
+  TF_EXPECT_OK(status);
+
+  ASSERT_EQ(output.node_size(), 3);
+  EXPECT_EQ(output.node(0).name(), "c0");
+
+  EXPECT_EQ(output.node(1).name(), "c2");
+  ASSERT_EQ(output.node(1).input_size(), 1);
+  EXPECT_EQ(output.node(1).input(0), "^c0");
+
+  EXPECT_EQ(output.node(2).name(), "id1");
+  ASSERT_EQ(output.node(2).input_size(), 2);
+  EXPECT_EQ(output.node(2).input(0), "c0");
+  EXPECT_EQ(output.node(2).input(1), "^c2");
 }
 
 }  // namespace

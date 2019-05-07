@@ -22,7 +22,6 @@ from __future__ import print_function
 from copy import deepcopy
 from functools import partial
 from six import iteritems
-from six import iterkeys
 from six import string_types
 from six import StringIO
 from tensorflow.contrib.graph_editor import reroute
@@ -87,7 +86,7 @@ def assign_renamed_collections_handler(info, elem, elem_):
   """Add the transformed elem to the (renamed) collections of elem.
 
   A collection is renamed only if is not a known key, as described in
-  `tf.GraphKeys`.
+  `tf.compat.v1.GraphKeys`.
 
   Args:
     info: Transform._TmpInfo instance.
@@ -129,7 +128,7 @@ def transform_op_if_inside_handler(info, op, keep_if_possible=True):
       return None
 
 
-def copy_op_handler(info, op, new_inputs, copy_shape=True, nodedef_fn=None):
+def copy_op_handler(info, op, new_inputs, copy_shape=False, nodedef_fn=None):
   """Copy a `tf.Operation`.
 
   Args:
@@ -188,9 +187,6 @@ def copy_op_handler(info, op, new_inputs, copy_shape=True, nodedef_fn=None):
   # TODO(fkp): Stop worrying about _original_op and remove this code?
   if op._original_op:
     op_._original_op = op._original_op
-
-  # Add op to the graph
-  info.graph_._add_op(op_)
 
   return op_, op_.outputs
 
@@ -492,7 +488,7 @@ class Transformer(object):
       t_ = info.transformed_ts[t]
       consumer_op_ = info.transformed_ops[consumer_op]
       t_index_ = list(consumer_op_.inputs).index(tmp_t_)
-      consumer_op_._update_input(t_index_, t_, update_dtype=False)  # pylint: disable=protected-access
+      consumer_op_._update_input(t_index_, t_)  # pylint: disable=protected-access
 
   def _connect_control_inputs(self, info):
     """Connect the previously copied ops."""
@@ -677,7 +673,7 @@ def copy_with_input_replacements(sgv, replacement_ts,
 
 
 def _add_control_flow_ops(ops, control_ios):
-  """Complete `ops` so that the tranformed graph is valid.
+  """Complete `ops` so that the transformed graph is valid.
 
   Partially copying a graph can lead to a malformed graph. For instance,
   copying half of a while construct is likely to result in an invalid graph.
@@ -738,9 +734,8 @@ def graph_replace(target_ts, replacement_ts, dst_scope="",
   # control dependencies.
   graph = util.get_unique_graph(flatten_target_ts, check_types=(tf_ops.Tensor))
   control_ios = util.ControlOutputs(graph)
-  ops = select.get_walks_intersection_ops(list(iterkeys(replacement_ts)),
-                                          flatten_target_ts,
-                                          control_ios=control_ios)
+  ops = select.get_walks_intersection_ops(
+      list(replacement_ts), flatten_target_ts, control_ios=control_ios)
   if not ops:
     raise ValueError("Targets and replacements are not connected!")
 

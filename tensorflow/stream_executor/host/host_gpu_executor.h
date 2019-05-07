@@ -61,8 +61,8 @@ class HostExecutor : public internal::StreamExecutorInterface {
   }
 
   void *Allocate(uint64 size) override;
-  void *AllocateSubBuffer(DeviceMemoryBase *mem, uint64 offset_bytes,
-                          uint64 size_bytes) override;
+  void *GetSubBuffer(DeviceMemoryBase *parent, uint64 offset_bytes,
+                     uint64 size_bytes) override;
   void Deallocate(DeviceMemoryBase *mem) override;
 
   void *HostMemoryAllocate(uint64 size) override { return new char[size]; }
@@ -77,7 +77,7 @@ class HostExecutor : public internal::StreamExecutorInterface {
   bool Memcpy(Stream *stream, DeviceMemoryBase *gpu_dst, const void *host_src,
               uint64 size) override;
   bool MemcpyDeviceToDevice(Stream *stream, DeviceMemoryBase *gpu_dst,
-                            const DeviceMemoryBase &host_src,
+                            const DeviceMemoryBase &gpu_src,
                             uint64 size) override;
 
   bool MemZero(Stream *stream, DeviceMemoryBase *location,
@@ -88,7 +88,7 @@ class HostExecutor : public internal::StreamExecutorInterface {
                 uint64 size) override;
 
   // No "synchronize all activity" implemented for this platform at the moment.
-  bool SynchronizeAllActivity() override { return false; }
+  bool SynchronizeAllActivity() override { return true; }
   bool SynchronousMemZero(DeviceMemoryBase *location, uint64 size) override;
 
   bool SynchronousMemSet(DeviceMemoryBase *location, int value,
@@ -103,22 +103,23 @@ class HostExecutor : public internal::StreamExecutorInterface {
                                                const DeviceMemoryBase &gpu_src,
                                                uint64 size) override;
 
-  bool HostCallback(Stream *stream, std::function<void()> callback) override;
+  bool HostCallback(Stream *stream,
+                    std::function<port::Status()> callback) override;
 
   port::Status AllocateEvent(Event *event) override {
-    return port::Status{port::error::UNIMPLEMENTED, ""};
+    return port::Status(port::error::UNIMPLEMENTED, "");
   }
 
   port::Status DeallocateEvent(Event *event) override {
-    return port::Status{port::error::UNIMPLEMENTED, ""};
+    return port::Status(port::error::UNIMPLEMENTED, "");
   }
 
   port::Status RecordEvent(Stream *stream, Event *event) override {
-    return port::Status{port::error::UNIMPLEMENTED, ""};
+    return port::Status(port::error::UNIMPLEMENTED, "");
   }
 
   port::Status WaitForEvent(Stream *stream, Event *event) override {
-    return port::Status{port::error::UNIMPLEMENTED, ""};
+    return port::Status(port::error::UNIMPLEMENTED, "");
   }
 
   Event::Status PollForEventStatus(Event *event) override {
@@ -146,7 +147,13 @@ class HostExecutor : public internal::StreamExecutorInterface {
     return false;
   }
 
-  DeviceDescription *PopulateDeviceDescription() const override;
+  port::StatusOr<std::unique_ptr<DeviceDescription>> CreateDeviceDescription()
+      const override {
+    return CreateDeviceDescription(0);
+  }
+
+  static port::StatusOr<std::unique_ptr<DeviceDescription>>
+  CreateDeviceDescription(int device_ordinal);
 
   port::Status EnablePeerAccessTo(StreamExecutorInterface *other) override {
     return port::Status::OK();
@@ -167,7 +174,7 @@ class HostExecutor : public internal::StreamExecutorInterface {
         "Shared memory configuration is unsupported for host "
         "executors."};
     LOG(INFO) << error_msg;
-    return port::Status{port::error::UNIMPLEMENTED, error_msg};
+    return port::Status(port::error::UNIMPLEMENTED, error_msg);
   }
 
   bool SupportsBlas() const override;
@@ -202,7 +209,7 @@ class HostExecutor : public internal::StreamExecutorInterface {
     return std::unique_ptr<internal::TimerInterface>(new HostTimer());
   }
 
-  void *CudaContextHack() override { return nullptr; }
+  void *GpuContextHack() override { return nullptr; }
 
  private:
   const PluginConfig plugin_config_;

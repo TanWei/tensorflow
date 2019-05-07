@@ -22,6 +22,8 @@ from __future__ import print_function
 
 import sys as _sys
 
+from tensorflow.python import autograph
+
 # pylint: disable=g-bad-import-order
 # Imports the following modules so that @RegisterGradient get executed.
 from tensorflow.python.ops import array_grad
@@ -29,8 +31,8 @@ from tensorflow.python.ops import cudnn_rnn_grad
 from tensorflow.python.ops import data_flow_grad
 from tensorflow.python.ops import manip_grad
 from tensorflow.python.ops import math_grad
+from tensorflow.python.ops import random_grad
 from tensorflow.python.ops import sparse_grad
-from tensorflow.python.ops import spectral_grad
 from tensorflow.python.ops import state_grad
 from tensorflow.python.ops import tensor_array_grad
 
@@ -50,7 +52,10 @@ from tensorflow.python.ops.control_flow_ops import group
 from tensorflow.python.ops.control_flow_ops import no_op
 from tensorflow.python.ops.control_flow_ops import tuple  # pylint: disable=redefined-builtin
 # pylint: enable=redefined-builtin
+from tensorflow.python.eager import wrap_function
 from tensorflow.python.ops.control_flow_ops import while_loop
+from tensorflow.python.ops.batch_ops import *
+from tensorflow.python.ops.critical_section_ops import *
 from tensorflow.python.ops.data_flow_ops import *
 from tensorflow.python.ops.functional_ops import *
 from tensorflow.python.ops.gradients import *
@@ -68,9 +73,13 @@ from tensorflow.python.ops.math_ops import *
 from tensorflow.python.ops.numerics import *
 from tensorflow.python.ops.parsing_ops import *
 from tensorflow.python.ops.partitioned_variables import *
+from tensorflow.python.ops.proto_ops import *
+from tensorflow.python.ops.ragged import ragged_dispatch as _ragged_dispatch
+from tensorflow.python.ops.ragged import ragged_operators as _ragged_operators
 from tensorflow.python.ops.random_ops import *
 from tensorflow.python.ops.script_ops import py_func
 from tensorflow.python.ops.session_ops import *
+from tensorflow.python.ops.sort_ops import *
 from tensorflow.python.ops.sparse_ops import *
 from tensorflow.python.ops.state_ops import assign
 from tensorflow.python.ops.state_ops import assign_add
@@ -90,6 +99,7 @@ from tensorflow.python.ops.state_ops import scatter_nd_sub
 # from tensorflow.python.ops.state_ops import scatter_nd_mul
 # from tensorflow.python.ops.state_ops import scatter_nd_div
 from tensorflow.python.ops.state_ops import scatter_nd_update
+from tensorflow.python.ops.stateless_random_ops import *
 from tensorflow.python.ops.string_ops import *
 from tensorflow.python.ops.template import *
 from tensorflow.python.ops.tensor_array_ops import *
@@ -98,3 +108,6 @@ from tensorflow.python.ops.variables import *
 # pylint: enable=wildcard-import
 # pylint: enable=g-bad-import-order
 
+
+# These modules were imported to set up RaggedTensor operators and dispatchers:
+del _ragged_dispatch, _ragged_operators

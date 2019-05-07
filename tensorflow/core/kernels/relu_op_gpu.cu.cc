@@ -23,16 +23,14 @@ limitations under the License.
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor_types.h"
 #include "tensorflow/core/kernels/relu_op_functor.h"
-#include "tensorflow/core/util/cuda_kernel_helper.h"
-#include "tensorflow/core/util/cuda_launch_config.h"
+#include "tensorflow/core/util/gpu_kernel_helper.h"
+#include "tensorflow/core/util/gpu_launch_config.h"
 
 namespace tensorflow {
 
 typedef Eigen::GpuDevice GPUDevice;
 
 namespace functor {
-#ifdef TF_HAS_CUDA_FP16
-
 // This kernel computes ReluGrad by processing one half2, two fp16, at a time.
 // It effectively does: backdrops = (feature > 0) ? gradient : 0
 // It also tries to use native half2 primitives as much as possible.
@@ -105,30 +103,63 @@ struct ReluGrad<Device, Eigen::half> {
     int32 count = gradient.size();
     if (count == 0) return;
     int32 half2_count = Eigen::divup(count, 2);
-    const int32 kThreadInBlock = 512;
+    constexpr int32 kThreadInBlock = 512;
     CudaLaunchConfig config = GetCudaLaunchConfigFixedBlockSize(
         half2_count, d, ReluGradHalfKernel, 0, kThreadInBlock);
-    ReluGradHalfKernel<<<config.block_count, config.thread_per_block, 0,
-                         d.stream()>>>(gradient.data(), feature.data(),
-                                       backprop.data(), count);
+    TF_CHECK_OK(CudaLaunchKernel(
+        ReluGradHalfKernel, config.block_count, config.thread_per_block, 0,
+        d.stream(), gradient.data(), feature.data(), backprop.data(), count));
   }
 };
 
-#endif  // TF_HAS_CUDA_FP16
+__global__ void Relu_int8x4_kernel(int vect_count, const int32* input,
+                                   int32* output) {
+  CUDA_1D_KERNEL_LOOP(index, vect_count) {
+    output[index] = __vmaxs4(input[index], 0);
+  }
+}
+
+// Functor used by ReluOp to do the computations.
+template <typename Device>
+struct Relu<Device, qint8> {
+  // Computes Relu activation of 'input' containing int8 elements, whose buffer
+  // size should be a multiple of 4, and aligned to an int32* boundary.
+  // (Alignment should be guaranteed by the GPU tensor allocator).
+  // 'output' should have the same size as 'input'.
+  void operator()(const Device& d, typename TTypes<qint8>::ConstTensor input,
+                  typename TTypes<qint8>::Tensor output) {
+    int32 count = input.size();
+    if (count == 0) return;
+
+    int32 vect_count = Eigen::divup(count, 4);
+    constexpr int32 kThreadInBlock = 512;
+    CudaLaunchConfig config = GetCudaLaunchConfigFixedBlockSize(
+        vect_count, d, Relu_int8x4_kernel, 0, kThreadInBlock);
+    TF_CHECK_OK(CudaLaunchKernel(
+        Relu_int8x4_kernel, config.block_count, config.thread_per_block, 0,
+        d.stream(), vect_count, reinterpret_cast<const int32*>(input.data()),
+        reinterpret_cast<int32*>(output.data())));
+  }
+};
+
 }  // namespace functor
 
 // Definition of the GPU implementations declared in relu_op.cc.
-#define DEFINE_GPU_KERNELS(T)                       \
-  template struct functor::Relu<GPUDevice, T>;      \
-  template struct functor::ReluGrad<GPUDevice, T>;  \
-  template struct functor::Relu6<GPUDevice, T>;     \
-  template struct functor::Relu6Grad<GPUDevice, T>; \
-  template struct functor::Elu<GPUDevice, T>;       \
-  template struct functor::EluGrad<GPUDevice, T>;   \
-  template struct functor::Selu<GPUDevice, T>;      \
+#define DEFINE_GPU_KERNELS(T)                           \
+  template struct functor::Relu<GPUDevice, T>;          \
+  template struct functor::ReluGrad<GPUDevice, T>;      \
+  template struct functor::Relu6<GPUDevice, T>;         \
+  template struct functor::Relu6Grad<GPUDevice, T>;     \
+  template struct functor::LeakyRelu<GPUDevice, T>;     \
+  template struct functor::LeakyReluGrad<GPUDevice, T>; \
+  template struct functor::Elu<GPUDevice, T>;           \
+  template struct functor::EluGrad<GPUDevice, T>;       \
+  template struct functor::Selu<GPUDevice, T>;          \
   template struct functor::SeluGrad<GPUDevice, T>;
 
 TF_CALL_GPU_NUMBER_TYPES(DEFINE_GPU_KERNELS);
+
+template struct functor::Relu<GPUDevice, qint8>;
 
 }  // end namespace tensorflow
 

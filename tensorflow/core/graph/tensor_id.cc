@@ -22,6 +22,11 @@ limitations under the License.
 
 namespace tensorflow {
 
+TensorId::TensorId(const SafeTensorId& id) : TensorId(id.first, id.second) {}
+
+SafeTensorId::SafeTensorId(const TensorId& id)
+    : SafeTensorId(string(id.first), id.second) {}
+
 TensorId ParseTensorName(const string& name) {
   return ParseTensorName(StringPiece(name.data(), name.size()));
 }
@@ -55,6 +60,10 @@ TensorId ParseTensorName(StringPiece name) {
     id.second = 0;
   }
   return id;
+}
+
+bool IsTensorIdControl(const TensorId& tensor_id) {
+  return tensor_id.index() == Graph::kControlSlot;
 }
 
 }  // namespace tensorflow

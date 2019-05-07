@@ -76,8 +76,8 @@ class BaseLinearOperatorIdentity(linear_operator.LinearOperator):
 
   def _min_matrix_dim(self):
     """Minimum of domain/range dimension, if statically available, else None."""
-    domain_dim = self.domain_dimension.value
-    range_dim = self.range_dimension.value
+    domain_dim = tensor_shape.dimension_value(self.domain_dimension)
+    range_dim = tensor_shape.dimension_value(self.range_dimension)
     if domain_dim is None or range_dim is None:
       return None
     return min(domain_dim, range_dim)
@@ -131,7 +131,7 @@ class LinearOperatorIdentity(BaseLinearOperatorIdentity):
   operator.matmul(x)
   ==> Shape [2, 4] Tensor, same as x.
 
-  y = tf.random_normal(shape=[3, 2, 4])
+  y = tf.random.normal(shape=[3, 2, 4])
   # Note that y.shape is compatible with operator.shape because operator.shape
   # is broadcast to [3, 2, 2].
   # This broadcast does NOT require copying data, since we can infer that y
@@ -492,7 +492,7 @@ class LinearOperatorScaledIdentity(BaseLinearOperatorIdentity):
   operator.matmul(x)
   ==> 3 * x
 
-  y = tf.random_normal(shape=[3, 2, 4])
+  y = tf.random.normal(shape=[3, 2, 4])
   # Note that y.shape is compatible with operator.shape because operator.shape
   # is broadcast to [3, 2, 2].
   x = operator.solve(y)
@@ -588,11 +588,18 @@ class LinearOperatorScaledIdentity(BaseLinearOperatorIdentity):
     """
     self._assert_proper_shapes = assert_proper_shapes
 
-    if not is_square:
-      raise ValueError("A ScaledIdentity operator is always square.")
-
     with ops.name_scope(name, values=[multiplier, num_rows]):
       self._multiplier = ops.convert_to_tensor(multiplier, name="multiplier")
+
+      # Check and auto-set hints.
+      if not self._multiplier.dtype.is_complex:
+        if is_self_adjoint is False:  # pylint: disable=g-bool-id-comparison
+          raise ValueError("A real diagonal operator is always self adjoint.")
+        else:
+          is_self_adjoint = True
+
+      if not is_square:
+        raise ValueError("A ScaledIdentity operator is always square.")
 
       super(LinearOperatorScaledIdentity, self).__init__(
           dtype=self._multiplier.dtype,

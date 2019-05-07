@@ -15,8 +15,9 @@ py_library(
     srcs = ["__init__.py"],
     srcs_version = "PY2AND3",
     deps = [
-        "custom_export_strategy",
+        ":custom_export_strategy",
         ":custom_loss_head",
+        ":distillation_loss",
         ":estimator",
         ":model",
         ":trainer_hooks",
@@ -68,6 +69,7 @@ py_test(
     name = "trainer_hooks_test",
     size = "small",
     srcs = ["trainer_hooks_test.py"],
+    python_version = "PY2",
     srcs_version = "PY2AND3",
     deps = [
         ":trainer_hooks",
@@ -117,6 +119,7 @@ py_test(
     name = "custom_export_strategy_test",
     size = "small",
     srcs = ["custom_export_strategy_test.py"],
+    python_version = "PY2",
     srcs_version = "PY2AND3",
     deps = [
         ":custom_export_strategy",
@@ -131,6 +134,7 @@ py_library(
     srcs = ["estimator.py"],
     srcs_version = "PY2AND3",
     deps = [
+        ":custom_loss_head",
         ":estimator_utils",
         ":model",
         "//tensorflow/contrib/boosted_trees:losses",
@@ -144,7 +148,9 @@ py_library(
     srcs = ["dnn_tree_combined_estimator.py"],
     srcs_version = "PY2AND3",
     deps = [
+        ":distillation_loss",
         ":estimator_utils",
+        ":model",
         ":trainer_hooks",
         "//tensorflow/contrib/boosted_trees:gbdt_batch",
         "//tensorflow/contrib/boosted_trees:model_ops_py",
@@ -156,10 +162,23 @@ py_library(
     ],
 )
 
+py_library(
+    name = "distillation_loss",
+    srcs = ["distillation_loss.py"],
+    srcs_version = "PY2AND3",
+    deps = [
+        "//tensorflow/contrib/learn",
+        "//tensorflow/python:math_ops",
+        "//tensorflow/python:nn",
+    ],
+)
+
 py_test(
     name = "dnn_tree_combined_estimator_test",
     size = "medium",
+    timeout = "long",
     srcs = ["dnn_tree_combined_estimator_test.py"],
+    python_version = "PY2",
     srcs_version = "PY2AND3",
     tags = [
         "no_gpu",
@@ -179,6 +198,8 @@ py_test(
     name = "estimator_test",
     size = "medium",
     srcs = ["estimator_test.py"],
+    python_version = "PY2",
+    shard_count = 4,
     srcs_version = "PY2AND3",
     tags = [
         "no_gpu",

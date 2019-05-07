@@ -33,6 +33,30 @@ namespace swig {
 //   dict.
 bool IsSequence(PyObject* o);
 
+// Implements the same interface as nest.is_sequence_or_composite
+// Returns a true if its input is a collections.Sequence (except strings)
+// or a CompositeTensor.
+//
+// Args:
+//   seq: an input sequence.
+//
+// Returns:
+//   True if the sequence is a not a string and is a collections.Sequence or a
+//   dict or a CompositeTensor.
+bool IsSequenceOrComposite(PyObject* o);
+
+// Implements the same interface as nest.is_sequence_or_composite
+// Returns a true if its input is a collections.Sequence (except strings)
+// or a CompositeTensor.
+//
+// Args:
+//   seq: an input sequence.
+//
+// Returns:
+//   True if the sequence is a not a string and is a collections.Sequence or a
+//   dict or a CompositeTensor.
+bool IsCompositeTensor(PyObject* o);
+
 // Implements the same interface as tensorflow.util.nest._is_namedtuple
 // Returns Py_True iff `instance` should be considered a `namedtuple`.
 //
@@ -46,6 +70,51 @@ bool IsSequence(PyObject* o);
 // Returns:
 //   True if `instance` is a `namedtuple`.
 PyObject* IsNamedtuple(PyObject* o, bool strict);
+
+// Returns a true if its input is a collections.Mapping.
+//
+// Args:
+//   seq: the input to be checked.
+//
+// Returns:
+//   True if the sequence subclasses mapping.
+bool IsMapping(PyObject* o);
+
+// A version of PyMapping_Keys that works in C++11
+//
+// Args:
+//   o: The input to extract keys from
+//
+// Returns:
+//   A new reference to a list of keys in the mapping.
+PyObject* MappingKeys(PyObject* o);
+
+// Returns a true if its input is an instance of an attr.s decorated class.
+//
+// Args:
+//   o: the input to be checked.
+//
+// Returns:
+//   True if the object is an instance of an attr.s decorated class.
+bool IsAttrs(PyObject* o);
+
+// Returns a true if its input is an ops.Tensor.
+//
+// Args:
+//   seq: the input to be checked.
+//
+// Returns:
+//   True if the object is a tensor.
+bool IsTensor(PyObject* o);
+
+// Returns a true if its input is an ops.IndexesSlices.
+//
+// Args:
+//   seq: the input to be checked.
+//
+// Returns:
+//   True if the object is an ops.IndexedSlices.
+bool IsIndexedSlices(PyObject* o);
 
 // Implements the same interface as tensorflow.util.nest._same_namedtuples
 // Returns Py_True iff the two namedtuples have the same name and fields.
@@ -82,7 +151,8 @@ PyObject* SameNamedtuples(PyObject* o1, PyObject* o2);
 //
 // Returns:
 //  Py_None on success, nullptr on error.
-PyObject* AssertSameStructure(PyObject* o1, PyObject* o2, bool check_types);
+PyObject* AssertSameStructure(PyObject* o1, PyObject* o2, bool check_types,
+                              bool expand_composites);
 
 // Implements the same interface as tensorflow.util.nest.flatten
 //
@@ -97,12 +167,15 @@ PyObject* AssertSameStructure(PyObject* o1, PyObject* o2, bool check_types);
 // used instead. The same convention is followed in `pack_sequence_as`. This
 // correctly repacks dicts and `OrderedDict`s after they have been flattened,
 // and also allows flattening an `OrderedDict` and then repacking it back using
-// a correponding plain dict, or vice-versa.
+// a corresponding plain dict, or vice-versa.
 // Dictionaries with non-sortable keys cannot be flattened.
 //
 // Args:
 //   nest: an arbitrarily nested structure or a scalar object. Note, numpy
 //       arrays are considered scalars.
+//   expand_composites: If true, then composite tensors (such as
+//       `tf.SparseTensor` and `tf.RaggedTensor` are flattened into their
+//       component tensors.
 //
 // Returns:
 //   A Python list, the flattened version of the input.
@@ -110,14 +183,36 @@ PyObject* AssertSameStructure(PyObject* o1, PyObject* o2, bool check_types);
 //
 // Raises:
 //   TypeError: The nest is or contains a dict with non-sortable keys.
-PyObject* Flatten(PyObject* nested);
+PyObject* Flatten(PyObject* nested, bool expand_composites = false);
 
-// RegisterSequenceClass is used to pass PyTypeObject for collections.Sequence
-// (which is defined in python) into the C++ world.
-// Alternative approach could be to import the collections modules and retrieve
-// the type from the module. This approach also requires some trigger from
-// Python so that we know that Python interpreter had been initialzied.
-void RegisterSequenceClass(PyObject* sequence_class);
+// The tensorflow.python.data package has its own nest utility that follows very
+// slightly different semantics for its functions than the tensorflow.python
+// nest utility. Returns a true if its input is a collections.Sequence (except
+// strings).
+//
+// Main differences are (this is copied from nest.py in the
+// tensorflow.data.util):
+//
+// 1. It removes support for lists as a level of nesting in nested structures.
+// 2. It adds support for `SparseTensorValue` as an atomic element.
+
+// IsSequence specialized for `tf.data`. Additional comments about
+// difference in functionality can be found in nest.py in
+// `tensorflow.python.data.util` and in the comments for Flatten above.
+bool IsSequenceForData(PyObject* o);
+
+// Flatten specialized for `tf.data`. Additional comments about
+// difference in functionality can be found in nest.py in
+// `tensorflow.python.data.util` and in the comments for Flatten above.
+PyObject* FlattenForData(PyObject* nested);
+
+// AssertSameStructure specialized for `tf.data`.
+PyObject* AssertSameStructureForData(PyObject* o1, PyObject* o2,
+                                     bool check_types);
+
+// RegisterType is used to pass PyTypeObject (which is defined in python) for an
+// arbitrary identifier `type_name` into C++.
+PyObject* RegisterType(PyObject* type_name, PyObject* type);
 
 }  // namespace swig
 }  // namespace tensorflow

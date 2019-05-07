@@ -60,6 +60,21 @@ void OpRegistry::Register(const OpRegistrationDataFactory& op_data_factory) {
 
 Status OpRegistry::LookUp(const string& op_type_name,
                           const OpRegistrationData** op_reg_data) const {
+  {
+    tf_shared_lock l(mu_);
+    if (initialized_) {
+      if (const OpRegistrationData* res =
+              gtl::FindWithDefault(registry_, op_type_name, nullptr)) {
+        *op_reg_data = res;
+        return Status::OK();
+      }
+    }
+  }
+  return LookUpSlow(op_type_name, op_reg_data);
+}
+
+Status OpRegistry::LookUpSlow(const string& op_type_name,
+                              const OpRegistrationData** op_reg_data) const {
   *op_reg_data = nullptr;
   const OpRegistrationData* res = nullptr;
 
@@ -97,7 +112,7 @@ Status OpRegistry::LookUp(const string& op_type_name,
         "Make sure the Op and Kernel are registered in the "
         "binary running in this process. Note that if you "
         "are loading a saved graph which used ops from "
-        "tf.contrib, accessing (e.g.) `tf.contrib.resampler` should be done"
+        "tf.contrib, accessing (e.g.) `tf.contrib.resampler` should be done "
         "before importing the graph, as contrib ops are lazily registered "
         "when the module is first accessed.");
     VLOG(1) << status.ToString();
@@ -256,7 +271,7 @@ Status OpListOpRegistry::LookUp(const string& op_type_name,
         "Make sure the Op and Kernel are registered in the "
         "binary running in this process. Note that if you "
         "are loading a saved graph which used ops from "
-        "tf.contrib, accessing (e.g.) `tf.contrib.resampler` should be done"
+        "tf.contrib, accessing (e.g.) `tf.contrib.resampler` should be done "
         "before importing the graph, as contrib ops are lazily registered "
         "when the module is first accessed.");
   }

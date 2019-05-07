@@ -46,6 +46,7 @@ py_test(
     name = "layers_test",
     size = "small",
     srcs = ["python/layers/layers_test.py"],
+    python_version = "PY2",
     srcs_version = "PY2AND3",
     deps = [
         ":layers",
@@ -95,14 +96,32 @@ py_library(
     ],
 )
 
+py_library(
+    name = "strip_pruning_vars_lib",
+    srcs = ["python/strip_pruning_vars_lib.py"],
+    srcs_version = "PY2AND3",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":pruning",
+        "//tensorflow/python:client",
+        "//tensorflow/python:framework",
+        "//tensorflow/python:platform",
+        "//tensorflow/python:training",
+        "//third_party/py/numpy",
+        "@six_archive//:six",
+    ],
+)
+
 py_test(
     name = "pruning_utils_test",
-    size = "small",
+    size = "medium",
     srcs = ["python/pruning_utils_test.py"],
+    python_version = "PY2",
     srcs_version = "PY2AND3",
     deps = [
         ":pruning_utils",
         "//tensorflow/python:client_testlib",
+        "@absl_py//absl/testing:parameterized",
     ],
 )
 
@@ -110,6 +129,7 @@ py_test(
     name = "pruning_test",
     size = "small",
     srcs = ["python/pruning_test.py"],
+    python_version = "PY2",
     srcs_version = "PY2AND3",
     deps = [
         ":pruning",
@@ -121,11 +141,39 @@ py_test(
     name = "rnn_cells_test",
     size = "small",
     srcs = ["python/layers/rnn_cells_test.py"],
+    python_version = "PY2",
     srcs_version = "PY2AND3",
     deps = [
         ":pruning",
         ":rnn_cells",
         "//tensorflow/python:client_testlib",
+    ],
+)
+
+py_test(
+    name = "strip_pruning_vars_test",
+    size = "small",
+    srcs = ["python/strip_pruning_vars_test.py"],
+    python_version = "PY2",
+    srcs_version = "PY2AND3",
+    deps = [
+        ":layers",
+        ":pruning",
+        ":rnn_cells",
+        ":strip_pruning_vars_lib",
+        "//tensorflow/python:client_testlib",
+    ],
+)
+
+py_binary(
+    name = "strip_pruning_vars",
+    srcs = ["python/strip_pruning_vars.py"],
+    python_version = "PY2",
+    srcs_version = "PY2AND3",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":strip_pruning_vars_lib",
+        "//tensorflow/python:platform",
     ],
 )
 
@@ -145,5 +193,6 @@ py_library(
         ":learning",
         ":pruning",
         ":rnn_cells",
+        ":strip_pruning_vars_lib",
     ],
 )

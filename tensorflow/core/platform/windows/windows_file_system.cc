@@ -32,6 +32,7 @@ limitations under the License.
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/posix/error.h"
 #include "tensorflow/core/platform/windows/error.h"
+#include "tensorflow/core/platform/windows/wide_char.h"
 #include "tensorflow/core/platform/windows/windows_file_system.h"
 
 // TODO(mrry): Prevent this Windows.h #define from leaking out of our headers.
@@ -111,6 +112,11 @@ class WindowsRandomAccessFile : public RandomAccessFile {
     }
   }
 
+  Status Name(StringPiece* result) const override {
+    *result = filename_;
+    return Status::OK();
+  }
+
   Status Read(uint64 offset, size_t n, StringPiece* result,
               char* scratch) const override {
     Status s;
@@ -149,7 +155,7 @@ class WindowsWritableFile : public WritableFile {
     }
   }
 
-  Status Append(const StringPiece& data) override {
+  Status Append(StringPiece data) override {
     DWORD bytes_written = 0;
     DWORD data_size = static_cast<DWORD>(data.size());
     BOOL write_result =
@@ -185,6 +191,11 @@ class WindowsWritableFile : public WritableFile {
       return IOErrorFromWindowsError(
           "FlushFileBuffers failed for: " + filename_, ::GetLastError());
     }
+    return Status::OK();
+  }
+
+  Status Name(StringPiece* result) const override {
+    *result = filename_;
     return Status::OK();
   }
 
@@ -438,6 +449,9 @@ Status WindowsFileSystem::DeleteFile(const string& fname) {
 Status WindowsFileSystem::CreateDir(const string& name) {
   Status result;
   std::wstring ws_name = Utf8ToWideChar(name);
+  if (ws_name.empty()) {
+    return errors::AlreadyExists(name);
+  }
   if (_wmkdir(ws_name.c_str()) != 0) {
     result = IOError("Failed to create a directory: " + name, errno);
   }

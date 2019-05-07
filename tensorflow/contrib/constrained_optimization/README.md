@@ -1,5 +1,10 @@
 <!-- TODO(acotter): Add usage example of non-convex optimization and stochastic classification. -->
 
+**NOTE: As tensorflow.contrib is being
+[deprecated](https://github.com/tensorflow/community/pull/18), TFCO is moving to
+its own repository on
+[github](https://github.com/google-research/tensorflow_constrained_optimization).**
+
 # ConstrainedOptimization (TFCO)
 
 TFCO is a library for optimizing inequality-constrained problems in TensorFlow.
@@ -46,7 +51,7 @@ document.
 Imagine that we want to constrain the recall of a binary classifier to be at
 least 90%. Since the recall is proportional to the number of true positive
 classifications, which itself is a sum of indicator functions, this constraint
-is non-differentible, and therefore cannot be used in a problem that will be
+is non-differentiable, and therefore cannot be used in a problem that will be
 optimized using a (stochastic) gradient-based algorithm.
 
 For this and similar problems, TFCO supports so-called *proxy constraints*,

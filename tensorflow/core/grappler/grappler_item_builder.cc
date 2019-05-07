@@ -29,6 +29,7 @@ limitations under the License.
 #include "tensorflow/core/framework/graph_def_util.h"
 #include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/core/framework/op.h"
+#include "tensorflow/core/framework/tensor.pb.h"
 #include "tensorflow/core/framework/tensor_shape.pb.h"
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/framework/variable.pb.h"
@@ -64,81 +65,14 @@ void InitializeTensor(DataType type, Tensor* tensor) {
     for (int i = 0; i < flat.size(); i++) {
       flat(i) = i % period;
     }
-  } else {
+  } else if (type != DT_STRING && type != DT_RESOURCE && type != DT_VARIANT) {
+    // DT_STRING, DT_RESOURCE and DT_VARIANT are not simple types according to
+    // is_simple_type<> in tensorflow/core/framework/type_traits.h, and
+    // Allocator will run non-trivial constructor/destructor for a Tensor with
+    // one of these types, so we should not memset its buffer.
     memset(const_cast<char*>(tensor->tensor_data().data()), 0,
            tensor->tensor_data().size());
   }
-}
-
-// Optimize the graph def (including function inlining and other optimizations).
-// This is a temporary change that optimizes the graph in context of a single
-// gpu machine. Down the line, we may want to make grappler_item_builder aware
-// of the cluster type (E.g: single cpu, multiple gpu, etc)  being simulated in
-// order to get the correct session options and environment, and performing the
-// correct optimizations.
-Status OptimizeGraph(const GraphDef& graph_def_arg, GraphDef* output_graph_def,
-                     const ItemConfig& cfg) {
-  if (!cfg.apply_optimizations && !cfg.erase_noinline_attributes) {
-    return Status::OK();
-  }
-
-  // Create a session option for a single GPU device.
-  SessionOptions options;
-
-  // Make a local copy of graph def, because we need to change some things.
-  GraphDef graph_def(graph_def_arg);
-
-  if (cfg.erase_noinline_attributes) {
-    // TF optimizer doesn't inline functions with "_noinline" attribute,
-    // so let's go over the function library and erase it.
-    for (auto& func : *graph_def.mutable_library()->mutable_function()) {
-      func.mutable_attr()->erase("_noinline");
-    }
-  }
-
-  // Instantiate all variables for function library runtime creation.
-  std::vector<Device*> devices;
-  TF_RETURN_IF_ERROR(DeviceFactory::AddDevices(
-      options, "/job:localhost/replica:0/task:0", &devices));
-  std::unique_ptr<DeviceMgr> dvc_mgr(new DeviceMgr(devices));
-  FunctionLibraryDefinition function_library(OpRegistry::Global(),
-                                             graph_def.library());
-  Env* env = Env::Default();
-
-  // Optimizer options: L1 and inlining. L1 is default.
-  OptimizerOptions* optimizer_opts =
-      options.config.mutable_graph_options()->mutable_optimizer_options();
-  if (cfg.apply_optimizations) {
-    optimizer_opts->set_opt_level(::tensorflow::OptimizerOptions_Level_L1);
-  } else {
-    optimizer_opts->set_opt_level(::tensorflow::OptimizerOptions_Level_L0);
-  }
-
-  // Create the function library runtime.
-  std::unique_ptr<ProcessFunctionLibraryRuntime> pflr(
-      new ProcessFunctionLibraryRuntime(dvc_mgr.get(), env,
-                                        graph_def.versions().producer(),
-                                        &function_library, *optimizer_opts));
-  FunctionLibraryRuntime* flr = pflr->GetFLR(devices[0]->name());
-
-  // Create the GraphOptimizer to optimize the graph def.
-  GraphConstructorOptions graph_ctor_opts;
-  graph_ctor_opts.allow_internal_ops = true;
-  graph_ctor_opts.expect_device_spec = false;
-  std::unique_ptr<Graph> graphptr(new Graph(function_library));
-
-  TF_RETURN_IF_ERROR(
-      ConvertGraphDefToGraph(graph_ctor_opts, graph_def, graphptr.get()));
-
-  // Optimize the graph.
-  ::tensorflow::GraphOptimizer optimizer(*optimizer_opts);
-  optimizer.Optimize(flr, env, devices[0], &graphptr, /*shape_map=*/nullptr);
-  graphptr->ToGraphDef(output_graph_def);
-
-  // The default values of attributes might have been stripped by the optimizer.
-  // Add them back.
-  return AddDefaultAttrsToGraphDef(output_graph_def, *graphptr->op_registry(),
-                                   0, true);
 }
 
 // Applies the same graph pruning logic to the graph as Session.Run in TF.
@@ -175,7 +109,85 @@ Status ReplaceUnknownShapeDim(const ItemConfig& cfg,
 
 }  // namespace
 
-// static
+Status RuntimeGraphOptimizer(const GraphDef& graph_def_arg,
+                             GraphDef* output_graph_def,
+                             const ItemConfig& cfg) {
+  // This is a temporary change that optimizes the graph in context of a single
+  // gpu machine. Down the line, we may want to make grappler_item_builder aware
+  // of the cluster type (E.g: single cpu, multiple gpu, etc)  being simulated
+  // in order to get the correct session options and environment, and performing
+  // the correct optimizations.
+
+  if (!cfg.apply_optimizations && !cfg.erase_noinline_attributes) {
+    return Status::OK();
+  }
+
+  // Create a session option for a single GPU device.
+  SessionOptions options;
+
+  // Make a local copy of graph def, because we need to change some things.
+  GraphDef graph_def(graph_def_arg);
+
+  if (cfg.erase_noinline_attributes) {
+    // TF optimizer doesn't inline functions with "_noinline" attribute,
+    // so let's go over the function library and erase it.
+    for (auto& func : *graph_def.mutable_library()->mutable_function()) {
+      func.mutable_attr()->erase("_noinline");
+    }
+  }
+
+  // Instantiate all variables for function library runtime creation.
+  std::vector<std::unique_ptr<Device>> devices;
+  // Only CPU device is used so instead of calling DeviceFactory::AddDevices()
+  // with dummy session config, which will conflict with user defined options
+  // and create unwanted devices, call cpu_factory->CreateDevices() to get CPU
+  // only devices.
+  DeviceFactory* cpu_factory = DeviceFactory::GetFactory("CPU");
+  TF_RETURN_IF_ERROR(cpu_factory->CreateDevices(
+      options, "/job:localhost/replica:0/task:0", &devices));
+  Device* cpu_device = devices[0].get();
+  std::unique_ptr<DeviceMgr> dvc_mgr(new DeviceMgr(std::move(devices)));
+  FunctionLibraryDefinition function_library(OpRegistry::Global(),
+                                             graph_def.library());
+  Env* env = Env::Default();
+
+  // Optimizer options: L1 and inlining. L1 is default.
+  OptimizerOptions* optimizer_opts =
+      options.config.mutable_graph_options()->mutable_optimizer_options();
+  if (cfg.apply_optimizations) {
+    optimizer_opts->set_opt_level(::tensorflow::OptimizerOptions_Level_L1);
+  } else {
+    optimizer_opts->set_opt_level(::tensorflow::OptimizerOptions_Level_L0);
+  }
+  optimizer_opts->set_do_function_inlining(cfg.inline_functions);
+
+  // Create the function library runtime.
+  std::unique_ptr<ProcessFunctionLibraryRuntime> pflr(
+      new ProcessFunctionLibraryRuntime(dvc_mgr.get(), env,
+                                        graph_def.versions().producer(),
+                                        &function_library, *optimizer_opts));
+  FunctionLibraryRuntime* flr = pflr->GetFLR(cpu_device->name());
+
+  // Create the GraphOptimizer to optimize the graph def.
+  GraphConstructorOptions graph_ctor_opts;
+  graph_ctor_opts.allow_internal_ops = true;
+  graph_ctor_opts.expect_device_spec = false;
+  std::unique_ptr<Graph> graphptr(new Graph(function_library));
+
+  TF_RETURN_IF_ERROR(
+      ConvertGraphDefToGraph(graph_ctor_opts, graph_def, graphptr.get()));
+
+  // Optimize the graph.
+  ::tensorflow::GraphOptimizer optimizer(*optimizer_opts);
+  optimizer.Optimize(flr, env, cpu_device, &graphptr, /*shape_map=*/nullptr);
+  graphptr->ToGraphDef(output_graph_def);
+
+  // The default values of attributes might have been stripped by the optimizer.
+  // Add them back.
+  return AddDefaultAttrsToGraphDef(output_graph_def, *graphptr->op_registry(),
+                                   0, true);
+}
+
 std::unique_ptr<GrapplerItem> GrapplerItemFromMetaGraphDef(
     const string& id, const MetaGraphDef& meta_graph, const ItemConfig& cfg) {
   if (id.empty()) {
@@ -191,9 +203,13 @@ std::unique_ptr<GrapplerItem> GrapplerItemFromMetaGraphDef(
     const string feed_name = NodeName(feed_node);
     new_item->feed.emplace_back(feed_name, Tensor());
   }
+  for (const auto& fetch_node : cfg.fetch_nodes) {
+    new_item->fetch.emplace_back(NodeName(fetch_node));
+  }
 
-  // Attempt to detect the fetch node(s).
-  if (meta_graph.collection_def().count("train_op") > 0) {
+  // Attempt to detect the fetch node(s) if they were not set explicitly.
+  if (new_item->fetch.empty() &&
+      meta_graph.collection_def().count("train_op") > 0) {
     const CollectionDef& nodes = meta_graph.collection_def().at("train_op");
     if (nodes.has_node_list()) {
       for (const auto& node : nodes.node_list().value()) {
@@ -510,7 +526,7 @@ std::unique_ptr<GrapplerItem> GrapplerItemFromMetaGraphDef(
         }
         if (!iter->second.has_tensor() ||
             iter->second.tensor().string_val_size() != 1) {
-          LOG(INFO) << "Unexected AttrValue proto: "
+          LOG(INFO) << "Unexpected AttrValue proto: "
                     << iter->second.DebugString();
           return nullptr;
         }
@@ -577,15 +593,15 @@ std::unique_ptr<GrapplerItem> GrapplerItemFromMetaGraphDef(
   }
 
   // Optimize the graph (function inlining, l1 optimizations, etc).
-  VLOG(1) << "Number of nodes in graph before OptimizeGraph: "
+  VLOG(1) << "Number of nodes in graph before RuntimeGraphOptimizer: "
           << new_item->graph.node_size();
   Status optimize_status =
-      OptimizeGraph(new_item->graph, &new_item->graph, cfg);
+      RuntimeGraphOptimizer(new_item->graph, &new_item->graph, cfg);
   if (!optimize_status.ok()) {
     LOG(ERROR) << "Graph preprocessing failed: " << optimize_status;
     return nullptr;
   }
-  VLOG(1) << "Number of nodes in graph after OptimizeGraph: "
+  VLOG(1) << "Number of nodes in graph after RuntimeGraphOptimizer: "
           << new_item->graph.node_size();
 
   if (cfg.prune_graph) {
@@ -623,6 +639,16 @@ std::unique_ptr<GrapplerItem> GrapplerItemFromMetaGraphDef(
     }
   }
   return new_item;
+}
+
+std::unique_ptr<GrapplerItem> GrapplerItemFromMetaGraphDefFile(
+    const string& id, const string& meta_graph_file, const ItemConfig& cfg) {
+  MetaGraphDef meta_graph;
+  if (!ReadMetaGraphDefFromFile(meta_graph_file, &meta_graph).ok()) {
+    LOG(ERROR) << "Failed to read " << meta_graph_file;
+    return nullptr;
+  }
+  return GrapplerItemFromMetaGraphDef(id, meta_graph, cfg);
 }
 
 }  // end namespace grappler

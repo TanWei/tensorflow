@@ -67,6 +67,7 @@ tf_cc_test(
         "//tensorflow/core:tensor_testutil",
         "//tensorflow/core:test",
         "//tensorflow/core:test_main",
+        "@com_google_absl//absl/algorithm:container",
     ],
 )
 
@@ -283,6 +284,7 @@ py_library(
 py_test(
     name = "categorical_split_handler_test",
     srcs = ["learner/batch/categorical_split_handler_test.py"],
+    python_version = "PY2",
     srcs_version = "PY2AND3",
     deps = [
         ":categorical_split_handler",
@@ -323,6 +325,7 @@ py_library(
 py_test(
     name = "ordinal_split_handler_test",
     srcs = ["learner/batch/ordinal_split_handler_test.py"],
+    python_version = "PY2",
     srcs_version = "PY2AND3",
     deps = [
         ":ordinal_split_handler",

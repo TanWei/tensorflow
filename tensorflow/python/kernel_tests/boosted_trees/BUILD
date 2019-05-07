@@ -52,12 +52,17 @@ tf_py_test(
 
 tf_py_test(
     name = "stats_ops_test",
-    size = "small",
+    size = "medium",
     srcs = ["stats_ops_test.py"],
     additional_deps = [
+        "//third_party/py/numpy",
+        "//tensorflow/python:array_ops",
         "//tensorflow/python:boosted_trees_ops",
+        "//tensorflow/python:constant_op",
+        "//tensorflow/python:dtypes",
         "//tensorflow/python:framework",
         "//tensorflow/python:framework_test_lib",
+        "//tensorflow/python:platform_test",
     ],
 )
 
@@ -68,6 +73,19 @@ tf_py_test(
     additional_deps = [
         "//tensorflow/core/kernels/boosted_trees:boosted_trees_proto_py",
         "//tensorflow/python:array_ops",
+        "//tensorflow/python:boosted_trees_ops",
+        "//tensorflow/python:constant_op",
+        "//tensorflow/python:framework_test_lib",
+        "//tensorflow/python:resources",
+    ],
+)
+
+tf_py_test(
+    name = "quantile_ops_test",
+    size = "small",
+    srcs = ["quantile_ops_test.py"],
+    additional_deps = [
+        "//tensorflow/core/kernels/boosted_trees:boosted_trees_proto_py",
         "//tensorflow/python:boosted_trees_ops",
         "//tensorflow/python:constant_op",
         "//tensorflow/python:framework_test_lib",

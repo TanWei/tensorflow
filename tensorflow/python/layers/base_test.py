@@ -21,15 +21,19 @@ from __future__ import print_function
 import copy
 
 from tensorflow.python.eager import context
+from tensorflow.python.eager import def_function
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import test_util
+from tensorflow.python.keras.engine import base_layer as keras_base_layer
+from tensorflow.python.keras.engine import input_spec
 from tensorflow.python.layers import base as base_layers
 from tensorflow.python.layers import core as core_layers
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import init_ops
 from tensorflow.python.ops import math_ops
+from tensorflow.python.ops import partitioned_variables
 from tensorflow.python.ops import random_ops
 from tensorflow.python.ops import state_ops
 from tensorflow.python.ops import variable_scope
@@ -38,7 +42,7 @@ from tensorflow.python.platform import test
 
 class BaseLayerTest(test.TestCase):
 
-  @test_util.run_in_graph_and_eager_modes()
+  @test_util.run_in_graph_and_eager_modes
   def testLayerProperties(self):
     layer = base_layers.Layer(name='my_layer')
     self.assertEqual(layer.variables, [])
@@ -52,13 +56,36 @@ class BaseLayerTest(test.TestCase):
     layer = base_layers.Layer(name='my_layer', trainable=False)
     self.assertEqual(layer.trainable, False)
 
-  @test_util.run_in_graph_and_eager_modes()
+  @test_util.run_in_graph_and_eager_modes
   def testInt64Layer(self):
     layer = base_layers.Layer(name='my_layer', dtype='int64')
     layer.add_variable('my_var', [2, 2])
     self.assertEqual(layer.name, 'my_layer')
 
-  @test_util.run_in_graph_and_eager_modes()
+  @test_util.run_in_graph_and_eager_modes
+  def testKerasStyleAddWeight(self):
+    keras_layer = keras_base_layer.Layer(name='keras_layer')
+    with ops.name_scope('foo'):
+      keras_variable = keras_layer.add_variable(
+          'my_var', [2, 2], initializer=init_ops.zeros_initializer())
+    self.assertEqual(keras_variable.name, 'foo/my_var:0')
+
+    with ops.name_scope('baz'):
+      old_style_layer = base_layers.Layer(name='my_layer')
+      # Test basic variable creation.
+      variable = old_style_layer.add_variable(
+          'my_var', [2, 2], initializer=init_ops.zeros_initializer())
+    self.assertEqual(variable.name, 'my_layer/my_var:0')
+
+    with base_layers.keras_style_scope():
+      layer = base_layers.Layer(name='my_layer')
+    # Test basic variable creation.
+    with ops.name_scope('bar'):
+      variable = layer.add_variable(
+          'my_var', [2, 2], initializer=init_ops.zeros_initializer())
+    self.assertEqual(variable.name, 'bar/my_var:0')
+
+  @test_util.run_in_graph_and_eager_modes
   def testAddWeight(self):
     layer = base_layers.Layer(name='my_layer')
 
@@ -83,24 +110,71 @@ class BaseLayerTest(test.TestCase):
     self.assertEqual(layer.variables, [variable, variable_2])
     self.assertEqual(layer.trainable_variables, [variable])
     self.assertEqual(layer.non_trainable_variables, [variable_2])
+
     if not context.executing_eagerly():
       self.assertEqual(
           len(ops.get_collection(ops.GraphKeys.TRAINABLE_VARIABLES)), 1)
 
-      # regularizers only supported in GRAPH mode.
-      regularizer = lambda x: math_ops.reduce_sum(x) * 1e-3
-      variable = layer.add_variable(
-          'reg_var', [2, 2],
+    regularizer = lambda x: math_ops.reduce_sum(x) * 1e-3
+    _ = layer.add_variable(
+        'reg_var', [2, 2],
+        initializer=init_ops.zeros_initializer(),
+        regularizer=regularizer)
+    self.assertEqual(len(layer.losses), 1)
+
+    added_variable = [False]
+
+    # Test that sync `ON_READ` variables are defaulted to be non-trainable.
+    variable_3 = layer.add_variable(
+        'sync_on_read_var', [2, 2],
+        initializer=init_ops.zeros_initializer(),
+        synchronization=variable_scope.VariableSynchronization.ON_READ,
+        aggregation=variable_scope.VariableAggregation.SUM)
+    self.assertEqual(layer.non_trainable_variables, [variable_2, variable_3])
+
+    @def_function.function
+    def function_adds_weight():
+      if not added_variable[0]:
+        layer.add_variable(
+            'reg_var_from_function', [2, 2],
+            initializer=init_ops.zeros_initializer(),
+            regularizer=regularizer)
+        added_variable[0] = True
+
+    function_adds_weight()
+    self.assertEqual(len(layer.losses), 2)
+
+  def testInvalidTrainableSynchronizationCombination(self):
+    layer = base_layers.Layer(name='my_layer')
+
+    with self.assertRaisesRegexp(
+        ValueError, 'Synchronization value can be set to '
+        'VariableSynchronization.ON_READ only for non-trainable variables. '
+        'You have specified trainable=True and '
+        'synchronization=VariableSynchronization.ON_READ.'):
+      _ = layer.add_variable(
+          'v', [2, 2],
           initializer=init_ops.zeros_initializer(),
-          regularizer=regularizer)
-      self.assertEqual(len(layer.losses), 1)
+          synchronization=variable_scope.VariableSynchronization.ON_READ,
+          trainable=True)
 
-  def testNoEagerActivityRegularizer(self):
-    with context.eager_mode():
-      with self.assertRaisesRegexp(ValueError, 'activity_regularizer'):
-        core_layers.Dense(1, activity_regularizer=lambda *args, **kwargs: 0.)
+  @test_util.run_deprecated_v1
+  def testReusePartitionedVaraiblesAndRegularizers(self):
+    regularizer = lambda x: math_ops.reduce_sum(x) * 1e-3
+    partitioner = partitioned_variables.fixed_size_partitioner(3)
+    for reuse in [False, True]:
+      with variable_scope.variable_scope(variable_scope.get_variable_scope(),
+                                         partitioner=partitioner,
+                                         reuse=reuse):
+        layer = base_layers.Layer(name='my_layer')
+        _ = layer.add_variable(
+            'reg_part_var', [4, 4],
+            initializer=init_ops.zeros_initializer(),
+            regularizer=regularizer)
+    self.assertEqual(
+        len(ops.get_collection(ops.GraphKeys.REGULARIZATION_LOSSES)), 3)
 
-  @test_util.run_in_graph_and_eager_modes()
+  @test_util.run_in_graph_and_eager_modes
   def testCall(self):
 
     class MyLayer(base_layers.Layer):
@@ -116,7 +190,7 @@ class BaseLayerTest(test.TestCase):
       # op is only supported in GRAPH mode
       self.assertEqual(outputs.op.name, 'my_layer/Square')
 
-  @test_util.run_in_graph_and_eager_modes()
+  @test_util.run_in_graph_and_eager_modes
   def testDeepCopy(self):
 
     class MyLayer(base_layers.Layer):
@@ -136,10 +210,9 @@ class BaseLayerTest(test.TestCase):
     layer_copy = copy.deepcopy(layer)
     self.assertEqual(layer_copy.name, layer.name)
     self.assertEqual(layer_copy._scope.name, layer._scope.name)
-    self.assertEqual(layer_copy._graph, layer._graph)
     self.assertEqual(layer_copy._private_tensor, layer._private_tensor)
 
-  @test_util.run_in_graph_and_eager_modes()
+  @test_util.run_in_graph_and_eager_modes
   def testScopeNaming(self):
 
     class PrivateLayer(base_layers.Layer):
@@ -187,14 +260,14 @@ class BaseLayerTest(test.TestCase):
       my_layer_scoped1.apply(inputs)
       self.assertEqual(my_layer_scoped1._scope.name, 'var_scope/my_layer_1')
 
-  @test_util.run_in_graph_and_eager_modes()
+  @test_util.run_in_graph_and_eager_modes
   def testInputSpecNdimCheck(self):
 
     class CustomerLayer(base_layers.Layer):
 
       def __init__(self):
         super(CustomerLayer, self).__init__()
-        self.input_spec = base_layers.InputSpec(ndim=2)
+        self.input_spec = input_spec.InputSpec(ndim=2)
 
       def call(self, inputs):
         return inputs
@@ -214,14 +287,14 @@ class BaseLayerTest(test.TestCase):
     layer = CustomerLayer()
     layer.apply(constant_op.constant([[1], [2]]))
 
-  @test_util.run_in_graph_and_eager_modes()
+  @test_util.run_in_graph_and_eager_modes
   def testInputSpecMinNdimCheck(self):
 
     class CustomerLayer(base_layers.Layer):
 
       def __init__(self):
         super(CustomerLayer, self).__init__()
-        self.input_spec = base_layers.InputSpec(min_ndim=2)
+        self.input_spec = input_spec.InputSpec(min_ndim=2)
 
       def call(self, inputs):
         return inputs
@@ -242,14 +315,14 @@ class BaseLayerTest(test.TestCase):
     layer = CustomerLayer()
     layer.apply(constant_op.constant([[[1], [2]]]))
 
-  @test_util.run_in_graph_and_eager_modes()
+  @test_util.run_in_graph_and_eager_modes
   def testInputSpecMaxNdimCheck(self):
 
     class CustomerLayer(base_layers.Layer):
 
       def __init__(self):
         super(CustomerLayer, self).__init__()
-        self.input_spec = base_layers.InputSpec(max_ndim=2)
+        self.input_spec = input_spec.InputSpec(max_ndim=2)
 
       def call(self, inputs):
         return inputs
@@ -270,14 +343,14 @@ class BaseLayerTest(test.TestCase):
     layer = CustomerLayer()
     layer.apply(constant_op.constant([[1], [2]]))
 
-  @test_util.run_in_graph_and_eager_modes()
+  @test_util.run_in_graph_and_eager_modes
   def testInputSpecDtypeCheck(self):
 
     class CustomerLayer(base_layers.Layer):
 
       def __init__(self):
         super(CustomerLayer, self).__init__()
-        self.input_spec = base_layers.InputSpec(dtype='float32')
+        self.input_spec = input_spec.InputSpec(dtype='float32')
 
       def call(self, inputs):
         return inputs
@@ -290,14 +363,14 @@ class BaseLayerTest(test.TestCase):
     layer = CustomerLayer()
     layer.apply(constant_op.constant(1.0, dtype=dtypes.float32))
 
-  @test_util.run_in_graph_and_eager_modes()
+  @test_util.run_in_graph_and_eager_modes
   def testInputSpecAxesCheck(self):
 
     class CustomerLayer(base_layers.Layer):
 
       def __init__(self):
         super(CustomerLayer, self).__init__()
-        self.input_spec = base_layers.InputSpec(axes={-1: 2})
+        self.input_spec = input_spec.InputSpec(axes={-1: 2})
 
       def call(self, inputs):
         return inputs
@@ -312,14 +385,14 @@ class BaseLayerTest(test.TestCase):
     layer = CustomerLayer()
     layer.apply(constant_op.constant([[1, 2], [3, 4], [5, 6]]))
 
-  @test_util.run_in_graph_and_eager_modes()
+  @test_util.run_in_graph_and_eager_modes
   def testInputSpecShapeCheck(self):
 
     class CustomerLayer(base_layers.Layer):
 
       def __init__(self):
         super(CustomerLayer, self).__init__()
-        self.input_spec = base_layers.InputSpec(shape=(None, 3))
+        self.input_spec = input_spec.InputSpec(shape=(None, 3))
 
       def call(self, inputs):
         return inputs
@@ -332,7 +405,7 @@ class BaseLayerTest(test.TestCase):
     layer = CustomerLayer()
     layer.apply(constant_op.constant([[1, 2, 3], [4, 5, 6]]))
 
-  @test_util.run_in_graph_and_eager_modes()
+  @test_util.run_in_graph_and_eager_modes
   def testNoInputSpec(self):
 
     class CustomerLayer(base_layers.Layer):
@@ -353,7 +426,7 @@ class BaseLayerTest(test.TestCase):
       layer.apply(array_ops.placeholder('int32'))
       layer.apply(array_ops.placeholder('int32', shape=(2, 3)))
 
-  @test_util.run_in_graph_and_eager_modes()
+  @test_util.run_in_graph_and_eager_modes
   def test_count_params(self):
     dense = core_layers.Dense(16)
     dense.build((None, 4))
@@ -363,7 +436,7 @@ class BaseLayerTest(test.TestCase):
     with self.assertRaises(ValueError):
       dense.count_params()
 
-  @test_util.run_in_graph_and_eager_modes()
+  @test_util.run_in_graph_and_eager_modes
   def testDictInputOutput(self):
 
     class DictLayer(base_layers.Layer):
@@ -387,6 +460,7 @@ class BaseLayerTest(test.TestCase):
       self.assertTrue(isinstance(result, dict))
       self.assertEqual(set(['label', 'logits']), set(result.keys()))
 
+  @test_util.run_deprecated_v1
   def testActivityRegularizer(self):
     regularizer = math_ops.reduce_sum
     layer = base_layers.Layer(activity_regularizer=regularizer)
@@ -475,6 +549,7 @@ class BaseLayerTest(test.TestCase):
         self.assertEqual(len(layer.trainable_variables), 1)
         self.assertEqual(layer.variables[0].graph, outer_graph)
 
+  @test_util.run_deprecated_v1
   def testGetUpdateFor(self):
 
     class MyLayer(base_layers.Layer):
@@ -519,6 +594,7 @@ class BaseLayerTest(test.TestCase):
     self.assertEqual(len(layer.get_updates_for([intermediate_inputs])), 1)
     self.assertEqual(len(layer.get_updates_for([outputs])), 0)
 
+  @test_util.run_deprecated_v1
   def testGetLossesFor(self):
 
     class MyLayer(base_layers.Layer):
@@ -561,18 +637,6 @@ class BaseLayerTest(test.TestCase):
     self.assertEqual(len(layer.get_losses_for([inputs])), 1)
     self.assertEqual(len(layer.get_losses_for([intermediate_inputs])), 1)
     self.assertEqual(len(layer.get_losses_for([outputs])), 0)
-
-  def testLayerGraphSetInFirstApply(self):
-    with ops.Graph().as_default():
-      # Graph at construction time is ignored
-      layer = core_layers.Dense(1)
-    with ops.Graph().as_default():
-      layer.apply(constant_op.constant([[1.]]))
-      # layer is now bound to second Graph
-    with ops.Graph().as_default(), self.assertRaisesRegexp(
-        ValueError, 'Input graph and Layer graph are not the same'):
-      layer.apply(constant_op.constant([[1.]]))
-
 
 if __name__ == '__main__':
   test.main()

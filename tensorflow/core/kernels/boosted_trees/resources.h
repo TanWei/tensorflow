@@ -48,7 +48,7 @@ class BoostedTreesEnsembleResource : public StampedResource {
  public:
   BoostedTreesEnsembleResource();
 
-  string DebugString() override;
+  string DebugString() const override;
 
   bool InitFromSerialized(const string& serialized, const int64 stamp_token);
 
@@ -68,7 +68,10 @@ class BoostedTreesEnsembleResource : public StampedResource {
       const int32 tree_id, const int32 node_id, const int32 index_in_batch,
       const std::vector<TTypes<int32>::ConstVec>& bucketized_features) const;
 
-  float node_value(const int32 tree_id, const int32 node_id) const;
+  std::vector<float> node_value(const int32 tree_id, const int32 node_id) const;
+
+  void set_node_value(const int32 tree_id, const int32 node_id,
+                      const float logits);
 
   int32 GetNumLayersGrown(const int32 tree_id) const;
 
@@ -99,6 +102,9 @@ class BoostedTreesEnsembleResource : public StampedResource {
   // Add a tree to the ensemble and returns a new tree_id.
   int32 AddNewTree(const float weight);
 
+  // Adds new tree with one node to the ensemble and sets node's value to logits
+  int32 AddNewTreeWithLogits(const float weight, const float logits);
+
   // Grows the tree by adding a split and leaves.
   void AddBucketizedSplitNode(const int32 tree_id, const int32 node_id,
                               const int32 feature_id, const int32 threshold,
@@ -126,7 +132,7 @@ class BoostedTreesEnsembleResource : public StampedResource {
   // Caller needs to hold the mutex lock while calling this.
   virtual void Reset();
 
-  void PostPruneTree(const int32 current_tree);
+  void PostPruneTree(const int32 current_tree, const int32 logits_dimension);
 
   // For a given node, returns the id in a pruned tree, as well as correction
   // to the cached prediction that should be applied. If tree was not
@@ -134,7 +140,7 @@ class BoostedTreesEnsembleResource : public StampedResource {
   // update will be equal to zero.
   void GetPostPruneCorrection(const int32 tree_id, const int32 initial_node_id,
                               int32* current_node_id,
-                              float* logit_update) const;
+                              std::vector<float>* logit_updates) const;
   mutex* get_mutex() { return &mu_; }
 
  private:
@@ -146,15 +152,15 @@ class BoostedTreesEnsembleResource : public StampedResource {
   // calculates the total update from that pruned node prediction.
   void CalculateParentAndLogitUpdate(
       const int32 start_node_id,
-      const std::vector<std::pair<int32, float>>& nodes_change,
-      int32* parent_id, float* change) const;
+      const std::vector<std::pair<int32, std::vector<float>>>& nodes_change,
+      int32* parent_id, std::vector<float>* change) const;
 
   // Helper method to collect the information to be used to prune some nodes in
   // the tree.
   void RecursivelyDoPostPrunePreparation(
       const int32 tree_id, const int32 node_id,
       std::vector<int32>* nodes_to_delete,
-      std::vector<std::pair<int32, float>>* nodes_meta);
+      std::vector<std::pair<int32, std::vector<float>>>* nodes_meta);
 
  protected:
   protobuf::Arena arena_;
